@@ -1,0 +1,146 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: telegram-mailer-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mailer}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mailer_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-telegram_mailer}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mailer} -d ${POSTGRES_DB:-telegram_mailer}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - mailer-network
+
+  # Redis
+  redis:
+    image: redis:7-alpine
+    container_name: telegram-mailer-redis
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redis_secret}
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis_secret}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - mailer-network
+
+  # Database migrations
+  migrations:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+    container_name: telegram-mailer-migrations
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-mailer}:${POSTGRES_PASSWORD:-mailer_secret}@postgres:5432/${POSTGRES_DB:-telegram_mailer}
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - mailer-network
+
+  # Admin Bot
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+    container_name: telegram-mailer-bot
+    environment:
+      # Database
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-mailer}:${POSTGRES_PASSWORD:-mailer_secret}@postgres:5432/${POSTGRES_DB:-telegram_mailer}
+
+      # Redis
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_secret}@redis:6379/0
+
+      # Telegram Bot
+      BOT_TOKEN: ${BOT_TOKEN}
+      ADMIN_IDS: ${ADMIN_IDS}
+
+      # Encryption
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+
+      # Storage paths
+      SESSIONS_PATH: /app/data/sessions
+      MEDIA_PATH: /app/data/media
+    volumes:
+      - sessions_data:/app/data/sessions
+      - media_data:/app/data/media
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    networks:
+      - mailer-network
+
+  # Worker (can be scaled)
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: telegram-mailer-worker
+    environment:
+      # Database
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-mailer}:${POSTGRES_PASSWORD:-mailer_secret}@postgres:5432/${POSTGRES_DB:-telegram_mailer}
+
+      # Redis
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_secret}@redis:6379/0
+
+      # Telegram API (for Telethon)
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH}
+
+      # Encryption
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+
+      # Storage paths
+      SESSIONS_PATH: /app/data/sessions
+      MEDIA_PATH: /app/data/media
+    volumes:
+      - sessions_data:/app/data/sessions
+      - media_data:/app/data/media
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    networks:
+      - mailer-network
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+volumes:
+  postgres_data:
+  redis_data:
+  sessions_data:
+  media_data:
+
+networks:
+  mailer-network:
+    driver: bridge

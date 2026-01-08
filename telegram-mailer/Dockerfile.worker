@@ -1,0 +1,44 @@
+# Dockerfile for Worker
+FROM python:3.11-slim
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY common/ ./common/
+COPY database/ ./database/
+COPY redis_client/ ./redis_client/
+COPY storage/ ./storage/
+COPY services/ ./services/
+COPY core/ ./core/
+COPY worker/ ./worker/
+
+# Create directories for sessions and media
+RUN mkdir -p /app/data/sessions /app/data/media
+
+# Create non-root user
+RUN useradd -m -u 1000 appuser && \
+    chown -R appuser:appuser /app
+USER appuser
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import asyncio; from redis_client import get_redis_manager; asyncio.run(get_redis_manager().health_check())" || exit 1
+
+# Run worker
+CMD ["python", "-m", "worker.main"]
