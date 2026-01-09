@@ -28,6 +28,9 @@ COPY services/ ./services/
 COPY core/ ./core/
 COPY bot/ ./bot/
 
+# Copy alembic config for migrations
+COPY alembic.ini ./alembic.ini
+
 # Create non-root user
 RUN useradd -m -u 1000 appuser && \
     chown -R appuser:appuser /app
