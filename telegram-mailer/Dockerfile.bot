@@ -33,9 +33,9 @@ RUN useradd -m -u 1000 appuser && \
     chown -R appuser:appuser /app
 USER appuser
 
-# Health check
+# Health check - verify bot process is running
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import asyncio; from bot.main import health_check; asyncio.run(health_check())" || exit 1
+    CMD pgrep -f "python -m bot.main" || exit 1
 
 # Run bot
 CMD ["python", "-m", "bot.main"]

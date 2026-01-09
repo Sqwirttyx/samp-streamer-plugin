@@ -1,20 +1,18 @@
-version: '3.8'
-
 services:
   # PostgreSQL Database
   postgres:
     image: postgres:15-alpine
     container_name: telegram-mailer-postgres
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-mailer}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mailer_secret}
-      POSTGRES_DB: ${POSTGRES_DB:-telegram_mailer}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mailer} -d ${POSTGRES_DB:-telegram_mailer}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -26,13 +24,13 @@ services:
   redis:
     image: redis:7-alpine
     container_name: telegram-mailer-redis
-    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redis_secret}
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
     volumes:
       - redis_data:/data
     ports:
       - "6379:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis_secret}", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -47,7 +45,7 @@ services:
       dockerfile: Dockerfile.bot
     container_name: telegram-mailer-migrations
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-mailer}:${POSTGRES_PASSWORD:-mailer_secret}@postgres:5432/${POSTGRES_DB:-telegram_mailer}
+      DATABASE_URL: ${DATABASE_URL}
     command: ["python", "-m", "alembic", "upgrade", "head"]
     depends_on:
       postgres:
@@ -63,14 +61,14 @@ services:
     container_name: telegram-mailer-bot
     environment:
       # Database
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-mailer}:${POSTGRES_PASSWORD:-mailer_secret}@postgres:5432/${POSTGRES_DB:-telegram_mailer}
+      DATABASE_URL: ${DATABASE_URL}
 
       # Redis
-      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_secret}@redis:6379/0
+      REDIS_URL: ${REDIS_URL}
 
       # Telegram Bot
       BOT_TOKEN: ${BOT_TOKEN}
-      ADMIN_IDS: ${ADMIN_IDS:-}
+      ADMIN_IDS: ${ADMIN_IDS}
 
       # Telegram API (needed for session validation)
       TELEGRAM_API_ID: ${TELEGRAM_API_ID}
@@ -80,8 +78,18 @@ services:
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
 
       # Storage paths
-      SESSIONS_PATH: /app/data/sessions
-      MEDIA_PATH: /app/data/media
+      SESSIONS_PATH: ${SESSIONS_PATH}
+      MEDIA_PATH: ${MEDIA_PATH}
+
+      # Limits
+      MAX_ACCOUNTS_PER_USER: ${MAX_ACCOUNTS_PER_USER}
+      MAX_PROXIES_PER_USER: ${MAX_PROXIES_PER_USER}
+      MAX_FOLDERS_PER_USER: ${MAX_FOLDERS_PER_USER}
+      MAX_CAMPAIGNS_PER_USER: ${MAX_CAMPAIGNS_PER_USER}
+
+      # Logging
+      LOG_LEVEL: ${LOG_LEVEL}
+      LOG_FORMAT: ${LOG_FORMAT}
     volumes:
       - sessions_data:/app/data/sessions
       - media_data:/app/data/media
@@ -104,10 +112,10 @@ services:
     container_name: telegram-mailer-worker
     environment:
       # Database
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-mailer}:${POSTGRES_PASSWORD:-mailer_secret}@postgres:5432/${POSTGRES_DB:-telegram_mailer}
+      DATABASE_URL: ${DATABASE_URL}
 
       # Redis
-      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_secret}@redis:6379/0
+      REDIS_URL: ${REDIS_URL}
 
       # Telegram API (for Telethon)
       TELEGRAM_API_ID: ${TELEGRAM_API_ID}
@@ -117,8 +125,27 @@ services:
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
 
       # Storage paths
-      SESSIONS_PATH: /app/data/sessions
-      MEDIA_PATH: /app/data/media
+      SESSIONS_PATH: ${SESSIONS_PATH}
+      MEDIA_PATH: ${MEDIA_PATH}
+
+      # Campaign defaults
+      DEFAULT_WORK_HOURS: ${DEFAULT_WORK_HOURS}
+      DEFAULT_REST_MINUTES: ${DEFAULT_REST_MINUTES}
+      DEFAULT_INTERVAL_MIN: ${DEFAULT_INTERVAL_MIN}
+      DEFAULT_INTERVAL_MAX: ${DEFAULT_INTERVAL_MAX}
+
+      # 16/8 Cycle
+      DEFAULT_USER_WINDOW_START: ${DEFAULT_USER_WINDOW_START}
+      USER_WINDOW_HOURS: ${USER_WINDOW_HOURS}
+      ADMIN_WINDOW_HOURS: ${ADMIN_WINDOW_HOURS}
+
+      # Worker settings
+      WORKER_HEALTH_CHECK_INTERVAL: ${WORKER_HEALTH_CHECK_INTERVAL}
+      WORKER_STATS_FLUSH_INTERVAL: ${WORKER_STATS_FLUSH_INTERVAL}
+
+      # Logging
+      LOG_LEVEL: ${LOG_LEVEL}
+      LOG_FORMAT: ${LOG_FORMAT}
     volumes:
       - sessions_data:/app/data/sessions
       - media_data:/app/data/media
