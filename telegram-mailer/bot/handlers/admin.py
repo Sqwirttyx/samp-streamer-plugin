@@ -7,11 +7,12 @@ from aiogram.types import CallbackQuery, Message, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.config import bot_config
+from bot.middlewares.auth import MASTER_KEY
+from bot.states.registration import AdminAuthState
 from database import get_db_manager
 from database.repositories import (
     AccountRepository,
     CampaignRepository,
-    InviteKeyRepository,
     UserRepository,
 )
 
@@ -24,9 +25,6 @@ def get_admin_menu_kb():
 
     builder.row(
         InlineKeyboardButton(text="👥 Пользователи", callback_data="admin:users")
-    )
-    builder.row(
-        InlineKeyboardButton(text="🔑 Инвайт-ключи", callback_data="admin:invites")
     )
     builder.row(
         InlineKeyboardButton(text="📊 Общая статистика", callback_data="admin:stats")
@@ -42,6 +40,66 @@ def get_admin_menu_kb():
     )
 
     return builder.as_markup()
+
+
+@router.message(Command("admin"))
+async def cmd_admin(message: Message, state: FSMContext, is_admin: bool = False):
+    """
+    Handle /admin command.
+
+    If user is already admin - show admin panel.
+    If not - ask for master key.
+    """
+    if is_admin:
+        # Already admin - show panel
+        text = """
+👑 <b>Админ-панель</b>
+
+Управление системой Telegram Mailer.
+"""
+        await message.answer(text, reply_markup=get_admin_menu_kb())
+    else:
+        # Not admin - ask for master key
+        await message.answer(
+            "🔐 <b>Доступ к админ-панели</b>\n\n"
+            "Введите мастер-ключ для получения прав администратора:"
+        )
+        await state.set_state(AdminAuthState.waiting_master_key)
+
+
+@router.message(AdminAuthState.waiting_master_key)
+async def process_master_key(message: Message, state: FSMContext, db_user=None):
+    """Process master key for admin access."""
+    entered_key = message.text.strip()
+
+    # Delete message with key for security
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
+    if entered_key == MASTER_KEY:
+        # Grant admin access
+        db_manager = get_db_manager()
+        async with db_manager.session() as session:
+            repo = UserRepository(session)
+            user = await repo.get_by_telegram_id(message.from_user.id)
+            if user:
+                user.is_admin = True
+                await session.flush()
+
+        await state.clear()
+        await message.answer(
+            "✅ <b>Доступ получен!</b>\n\n"
+            "Вы получили права администратора.",
+            reply_markup=get_admin_menu_kb(),
+        )
+    else:
+        await state.clear()
+        await message.answer(
+            "❌ <b>Неверный ключ</b>\n\n"
+            "Попробуйте ещё раз командой /admin"
+        )
 
 
 @router.callback_query(F.data == "menu:admin")
@@ -62,22 +120,6 @@ async def menu_admin(callback: CallbackQuery, is_admin: bool = False):
         reply_markup=get_admin_menu_kb(),
     )
     await callback.answer()
-
-
-@router.command(Command("admin"))
-async def cmd_admin(message: Message, is_admin: bool = False):
-    """Handle /admin command."""
-    if not is_admin:
-        await message.answer(bot_config.NOT_AUTHORIZED)
-        return
-
-    text = """
-👑 <b>Админ-панель</b>
-
-Управление системой Telegram Mailer.
-"""
-
-    await message.answer(text, reply_markup=get_admin_menu_kb())
 
 
 @router.callback_query(F.data == "admin:users")
@@ -111,76 +153,6 @@ async def admin_users(callback: CallbackQuery, is_admin: bool = False):
 
     await callback.message.edit_text(text, reply_markup=builder.as_markup())
     await callback.answer()
-
-
-@router.callback_query(F.data == "admin:invites")
-async def admin_invites(callback: CallbackQuery, is_admin: bool = False, db_user=None):
-    """Show invite keys management."""
-    if not is_admin:
-        await callback.answer(bot_config.NOT_AUTHORIZED, show_alert=True)
-        return
-
-    db_manager = get_db_manager()
-    async with db_manager.readonly_session() as session:
-        invite_repo = InviteKeyRepository(session)
-        keys = await invite_repo.get_unused(db_user.id)
-
-    lines = ["🔑 <b>Активные инвайт-ключи</b>\n"]
-
-    for key in keys[:10]:
-        lines.append(f"<code>{key.key}</code> ({key.remaining_uses} исп.)")
-
-    if not keys:
-        lines.append("<i>Нет активных ключей</i>")
-
-    text = "\n".join(lines)
-
-    builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(text="➕ Создать 1 ключ", callback_data="admin:invite:create:1")
-    )
-    builder.row(
-        InlineKeyboardButton(text="➕ Создать 5 ключей", callback_data="admin:invite:create:5")
-    )
-    builder.row(
-        InlineKeyboardButton(text="➕ Создать 10 ключей", callback_data="admin:invite:create:10")
-    )
-    builder.row(
-        InlineKeyboardButton(text="◀️ Назад", callback_data="menu:admin")
-    )
-
-    await callback.message.edit_text(text, reply_markup=builder.as_markup())
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("admin:invite:create:"))
-async def admin_create_invites(callback: CallbackQuery, is_admin: bool = False, db_user=None):
-    """Create invite keys."""
-    if not is_admin:
-        await callback.answer(bot_config.NOT_AUTHORIZED, show_alert=True)
-        return
-
-    count = int(callback.data.split(":")[-1])
-
-    db_manager = get_db_manager()
-    async with db_manager.session() as session:
-        invite_repo = InviteKeyRepository(session)
-        keys = await invite_repo.create_batch(
-            created_by=db_user.id,
-            count=count,
-            max_uses=1,
-            expires_in_days=30,
-        )
-
-    lines = [f"✅ <b>Создано {count} ключей:</b>\n"]
-    for key in keys:
-        lines.append(f"<code>{key.key}</code>")
-
-    await callback.message.answer("\n".join(lines))
-    await callback.answer(f"✅ Создано {count} ключей")
-
-    # Refresh invites list
-    await admin_invites(callback, is_admin, db_user)
 
 
 @router.callback_query(F.data == "admin:stats")
@@ -277,39 +249,6 @@ async def admin_settings(callback: CallbackQuery, is_admin: bool = False):
 
     await callback.message.edit_text(text, reply_markup=builder.as_markup())
     await callback.answer()
-
-
-@router.message(Command("generate_key"))
-async def cmd_generate_key(message: Message, is_admin: bool = False, db_user=None):
-    """Generate invite keys via command."""
-    if not is_admin:
-        await message.answer(bot_config.NOT_AUTHORIZED)
-        return
-
-    # Parse count from command
-    parts = message.text.split()
-    count = 1
-    if len(parts) > 1:
-        try:
-            count = min(50, max(1, int(parts[1])))
-        except ValueError:
-            pass
-
-    db_manager = get_db_manager()
-    async with db_manager.session() as session:
-        invite_repo = InviteKeyRepository(session)
-        keys = await invite_repo.create_batch(
-            created_by=db_user.id,
-            count=count,
-            max_uses=1,
-            expires_in_days=30,
-        )
-
-    lines = [f"✅ <b>Создано {count} ключей:</b>\n"]
-    for key in keys:
-        lines.append(f"<code>{key.key}</code>")
-
-    await message.answer("\n".join(lines))
 
 
 @router.message(Command("broadcast"))

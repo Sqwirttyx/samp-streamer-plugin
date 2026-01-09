@@ -1,9 +1,9 @@
-"""Registration FSM states."""
+"""Admin FSM states."""
 
 from aiogram.fsm.state import State, StatesGroup
 
 
-class RegistrationState(StatesGroup):
-    """States for user registration flow."""
+class AdminAuthState(StatesGroup):
+    """States for admin authentication flow."""
 
-    waiting_invite_key = State()
+    waiting_master_key = State()

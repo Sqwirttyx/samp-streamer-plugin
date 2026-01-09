@@ -8,16 +8,18 @@ from aiogram.types import CallbackQuery, Message, TelegramObject
 from database import get_db_manager
 from database.repositories import UserRepository
 
+# Master key for admin access
+MASTER_KEY = "JSjsk7NiJ9777M"
+
 
 class AuthMiddleware(BaseMiddleware):
     """
     Middleware for user authentication.
 
-    Checks if user is registered and injects user object into handler data.
+    - Auto-registers new users on first interaction
+    - Checks admin status
+    - Injects user object into handler data
     """
-
-    # Commands that don't require authentication
-    EXEMPT_COMMANDS = {"/start", "/help"}
 
     async def __call__(
         self,
@@ -31,15 +33,10 @@ class AuthMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         telegram_id = user.id
+        username = user.username
 
-        # Check if command is exempt
-        if isinstance(event, Message) and event.text:
-            command = event.text.split()[0] if event.text.startswith("/") else ""
-            if command in self.EXEMPT_COMMANDS:
-                return await handler(event, data)
-
-        # Get user from database
-        db_user = await self._get_db_user(telegram_id)
+        # Get or create user in database
+        db_user = await self._get_or_create_user(telegram_id, username)
 
         # Inject user into data
         data["db_user"] = db_user
@@ -57,9 +54,30 @@ class AuthMiddleware(BaseMiddleware):
             return event.from_user
         return None
 
-    async def _get_db_user(self, telegram_id: int):
-        """Get user from database."""
+    async def _get_or_create_user(self, telegram_id: int, username: Optional[str] = None):
+        """
+        Get user from database, or create if not exists.
+
+        All users are automatically registered on first interaction.
+        """
         db_manager = get_db_manager()
+
         async with db_manager.session() as session:
             repo = UserRepository(session)
-            return await repo.get_by_telegram_id(telegram_id)
+
+            # Try to get existing user
+            user = await repo.get_by_telegram_id(telegram_id)
+
+            if not user:
+                # Auto-register new user
+                user = await repo.create_user(
+                    telegram_id=telegram_id,
+                    username=username,
+                    is_admin=False,
+                )
+            elif username and user.username != username:
+                # Update username if changed
+                user.username = username
+                await session.flush()
+
+            return user

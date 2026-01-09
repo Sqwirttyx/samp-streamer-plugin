@@ -7,7 +7,7 @@ from common.exceptions import NotFoundError, ValidationError
 from common.logger import get_logger
 from database import get_db_manager
 from database.models import User
-from database.repositories import UserRepository, InviteKeyRepository
+from database.repositories import UserRepository
 
 logger = get_logger(__name__)
 
@@ -16,7 +16,7 @@ class UserService:
     """
     Service for user management.
 
-    Handles user registration, settings, and validation.
+    Handles user registration, settings, and admin access.
     """
 
     async def get_by_telegram_id(self, telegram_id: int) -> Optional[User]:
@@ -54,50 +54,39 @@ class UserService:
     async def register(
         self,
         telegram_id: int,
-        username: Optional[str],
-        invite_key: str,
+        username: Optional[str] = None,
         is_admin: bool = False,
     ) -> User:
         """
-        Register new user with invite key.
+        Register new user (open access).
 
         Args:
             telegram_id: Telegram user ID
             username: Telegram username
-            invite_key: Invite key to use
             is_admin: Whether user is admin
 
         Returns:
             Created user
 
         Raises:
-            ValidationError: If invite key is invalid
+            ValidationError: If user already exists
         """
         db_manager = get_db_manager()
 
         async with db_manager.session() as session:
-            # Check if already registered
             user_repo = UserRepository(session)
+
+            # Check if already registered
             existing = await user_repo.get_by_telegram_id(telegram_id)
             if existing:
                 raise ValidationError("User already registered")
-
-            # Validate invite key
-            invite_repo = InviteKeyRepository(session)
-            is_valid = await invite_repo.validate(invite_key)
-            if not is_valid:
-                raise ValidationError("Invalid invite key")
 
             # Create user
             user = await user_repo.create_user(
                 telegram_id=telegram_id,
                 username=username,
-                invite_key=invite_key,
                 is_admin=is_admin,
             )
-
-            # Mark key as used
-            await invite_repo.use_key(invite_key, user.id)
 
             logger.info(f"User registered: {telegram_id}")
             return user
@@ -176,6 +165,32 @@ class UserService:
             await session.flush()
 
             logger.info(f"User admin status changed: {user_id} -> {is_admin}")
+            return user
+
+    async def set_admin_by_telegram_id(self, telegram_id: int, is_admin: bool) -> User:
+        """
+        Set user admin status by Telegram ID.
+
+        Args:
+            telegram_id: Telegram user ID
+            is_admin: Admin status
+
+        Returns:
+            Updated user
+        """
+        db_manager = get_db_manager()
+
+        async with db_manager.session() as session:
+            repo = UserRepository(session)
+            user = await repo.get_by_telegram_id(telegram_id)
+
+            if not user:
+                raise NotFoundError("User not found")
+
+            user.is_admin = is_admin
+            await session.flush()
+
+            logger.info(f"User {telegram_id} admin status changed: {is_admin}")
             return user
 
     async def get_all_users(self, limit: int = 100) -> list[User]:
