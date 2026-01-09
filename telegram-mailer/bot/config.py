@@ -9,6 +9,10 @@ class BotConfig:
     TOKEN = settings.bot_token
     ADMIN_IDS = settings.admin_ids
 
+    # Telegram API credentials (for Telethon)
+    API_ID = settings.telegram_api_id
+    API_HASH = settings.telegram_api_hash
+
     # Throttling
     THROTTLE_RATE = 0.5  # seconds between messages
     CALLBACK_THROTTLE_RATE = 1.0  # seconds between callback queries

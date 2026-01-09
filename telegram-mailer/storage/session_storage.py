@@ -71,6 +71,70 @@ class SessionStorage:
         normalized = "".join(filter(str.isdigit, phone))
         return hashlib.sha256(normalized.encode()).hexdigest()[:16]
 
+    async def save_session_string(
+        self,
+        user_id: UUID,
+        account_id: UUID,
+        session_string: str,
+    ) -> Path:
+        """
+        Save session string (encrypted).
+
+        Args:
+            user_id: User UUID
+            account_id: Account UUID
+            session_string: Telethon StringSession string
+
+        Returns:
+            Path to encrypted session file
+        """
+        dest_path = self._session_path(user_id, account_id)
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Encrypt and save the session string
+        session_data = session_string.encode("utf-8")
+        encrypted = self.encryption.encrypt_data(session_data)
+
+        async with aiofiles.open(dest_path, "wb") as f:
+            await f.write(encrypted)
+
+        logger.info(f"Session string saved: {dest_path}")
+        return dest_path
+
+    async def get_session_string(
+        self,
+        user_id: UUID,
+        account_id: UUID,
+    ) -> str:
+        """
+        Get decrypted session string.
+
+        Args:
+            user_id: User UUID
+            account_id: Account UUID
+
+        Returns:
+            Session string
+
+        Raises:
+            SessionNotFoundError: If session not found
+            SessionDecryptionError: If decryption fails
+        """
+        encrypted_path = self._session_path(user_id, account_id)
+
+        if not encrypted_path.exists():
+            raise SessionNotFoundError(f"Session not found for account {account_id}")
+
+        try:
+            async with aiofiles.open(encrypted_path, "rb") as f:
+                encrypted_data = await f.read()
+
+            decrypted = self.encryption.decrypt_data(encrypted_data)
+            return decrypted.decode("utf-8")
+
+        except Exception as e:
+            raise SessionDecryptionError(f"Failed to decrypt session: {e}")
+
     async def save_session(
         self,
         user_id: UUID,
