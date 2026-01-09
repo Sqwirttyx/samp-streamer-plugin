@@ -1,5 +1,6 @@
 """Database connection management using SQLAlchemy with asyncpg."""
 
+import os
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional
 
@@ -23,6 +24,43 @@ class Base(DeclarativeBase):
     pass
 
 
+def get_database_url() -> str:
+    """
+    Get database URL from environment or settings.
+
+    Priority:
+    1. DATABASE_URL environment variable (for migrations/Docker)
+    2. Settings (for application)
+    """
+    # First try direct environment variable
+    url = os.getenv("DATABASE_URL")
+    if url:
+        # Ensure it uses asyncpg
+        if url.startswith("postgresql://"):
+            url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return url
+
+    # Fall back to settings
+    from common.config import settings
+    return settings.database_url
+
+
+def get_database_echo() -> bool:
+    """Get database echo setting."""
+    echo = os.getenv("DATABASE_ECHO", "").lower()
+    if echo in ("true", "1", "yes"):
+        return True
+    if echo in ("false", "0", "no"):
+        return False
+
+    # Fall back to settings only if not running migrations
+    try:
+        from common.config import settings
+        return settings.database_echo
+    except Exception:
+        return False
+
+
 class DatabaseManager:
     """
     Database connection manager.
@@ -32,8 +70,8 @@ class DatabaseManager:
 
     def __init__(
         self,
-        database_url: str,
-        echo: bool = False,
+        database_url: Optional[str] = None,
+        echo: Optional[bool] = None,
         pool_size: int = 10,
         max_overflow: int = 20,
     ):
@@ -41,13 +79,13 @@ class DatabaseManager:
         Initialize database manager.
 
         Args:
-            database_url: PostgreSQL connection URL
-            echo: Echo SQL queries to stdout
+            database_url: PostgreSQL connection URL (auto-detected if None)
+            echo: Echo SQL queries to stdout (auto-detected if None)
             pool_size: Connection pool size
             max_overflow: Max overflow connections
         """
-        self._database_url = database_url
-        self._echo = echo
+        self._database_url = database_url or get_database_url()
+        self._echo = echo if echo is not None else get_database_echo()
         self._pool_size = pool_size
         self._max_overflow = max_overflow
         self._engine: Optional[AsyncEngine] = None
@@ -141,12 +179,7 @@ def get_db_manager() -> DatabaseManager:
     """Get the global database manager instance."""
     global _db_manager
     if _db_manager is None:
-        from common.config import settings
-
-        _db_manager = DatabaseManager(
-            database_url=settings.database_url,
-            echo=settings.database_echo,
-        )
+        _db_manager = DatabaseManager()
     return _db_manager
 
 

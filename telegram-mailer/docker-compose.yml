@@ -70,7 +70,11 @@ services:
 
       # Telegram Bot
       BOT_TOKEN: ${BOT_TOKEN}
-      ADMIN_IDS: ${ADMIN_IDS}
+      ADMIN_IDS: ${ADMIN_IDS:-}
+
+      # Telegram API (needed for session validation)
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH}
 
       # Encryption
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
