@@ -11,6 +11,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from bot.config import bot_config
 from bot.handlers import (
     accounts,
+    account_auth,
     admin,
     campaigns,
     folders,
@@ -48,6 +49,7 @@ def create_dispatcher() -> Dispatcher:
     # Register handlers
     dp.include_router(start.router)
     dp.include_router(accounts.router)
+    dp.include_router(account_auth.router)
     dp.include_router(folders.router)
     dp.include_router(proxy.router)
     dp.include_router(campaigns.router)

@@ -94,12 +94,16 @@ def get_accounts_list_kb(
             )
         builder.row(*pagination_buttons)
 
-    # Add account button
+    # Add account buttons
     builder.row(
         InlineKeyboardButton(
-            text="➕ Добавить аккаунт",
+            text="📲 Добавить по номеру",
+            callback_data="account:add_by_code",
+        ),
+        InlineKeyboardButton(
+            text="📁 Загрузить .session",
             callback_data="account:add",
-        )
+        ),
     )
 
     # Back button
