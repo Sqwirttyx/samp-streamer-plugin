@@ -52,9 +52,8 @@ Dockerfile*
 docker-compose*.yml
 .dockerignore
 
-# Local data
+# Local data (runtime directories, not Python modules)
 data/
-storage/
 sessions/
 media/
 *.session
