@@ -9,6 +9,7 @@ from database.repositories.campaign_repo import CampaignRepository
 from database.repositories.stats_repo import StatsRepository
 from database.repositories.invite_repo import InviteKeyRepository
 from database.repositories.error_log_repo import ErrorLogRepository
+from database.repositories.admin_message_repo import AdminMessageRepository
 
 __all__ = [
     "BaseRepository",
@@ -20,4 +21,5 @@ __all__ = [
     "StatsRepository",
     "InviteKeyRepository",
     "ErrorLogRepository",
+    "AdminMessageRepository",
 ]

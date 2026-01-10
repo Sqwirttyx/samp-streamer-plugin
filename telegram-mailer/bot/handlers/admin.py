@@ -33,6 +33,9 @@ def get_admin_menu_kb():
         InlineKeyboardButton(text="📨 Админ-рассылки", callback_data="admin:campaigns")
     )
     builder.row(
+        InlineKeyboardButton(text="🕐 Тексты 8ч окна", callback_data="admin:messages")
+    )
+    builder.row(
         InlineKeyboardButton(text="⚙️ Настройки системы", callback_data="admin:settings")
     )
     builder.row(
@@ -340,4 +343,448 @@ async def cmd_broadcast(message: Message, is_admin: bool = False):
         f"📢 Рассылка завершена!\n\n"
         f"✅ Отправлено: {sent}\n"
         f"❌ Ошибок: {failed}"
+    )
+
+
+# ========== Admin Messages (8h window) ==========
+
+from uuid import UUID
+from bot.states import AdminMessageState
+from database.repositories import AdminMessageRepository
+
+
+def get_admin_messages_kb(messages, page=0, per_page=10):
+    """Build admin messages list keyboard."""
+    builder = InlineKeyboardBuilder()
+
+    start_idx = page * per_page
+    end_idx = start_idx + per_page
+    page_messages = messages[start_idx:end_idx]
+
+    for msg in page_messages:
+        status = "✅" if msg.is_active else "❌"
+        text = f"{status} {msg.name[:25]} | 📊{msg.usage_count}"
+        builder.row(
+            InlineKeyboardButton(
+                text=text,
+                callback_data=f"admin:msg:{msg.id}:view",
+            )
+        )
+
+    # Pagination
+    total_pages = (len(messages) + per_page - 1) // per_page
+    if total_pages > 1:
+        pagination_buttons = []
+        if page > 0:
+            pagination_buttons.append(
+                InlineKeyboardButton(text="◀️", callback_data=f"admin:messages:page:{page - 1}")
+            )
+        pagination_buttons.append(
+            InlineKeyboardButton(text=f"{page + 1}/{total_pages}", callback_data="admin:messages:page:current")
+        )
+        if page < total_pages - 1:
+            pagination_buttons.append(
+                InlineKeyboardButton(text="▶️", callback_data=f"admin:messages:page:{page + 1}")
+            )
+        builder.row(*pagination_buttons)
+
+    builder.row(
+        InlineKeyboardButton(text="➕ Добавить текст", callback_data="admin:msg:add")
+    )
+    builder.row(
+        InlineKeyboardButton(text="◀️ Назад", callback_data="menu:admin")
+    )
+
+    return builder.as_markup()
+
+
+@router.callback_query(F.data == "admin:messages")
+async def admin_messages(callback: CallbackQuery, is_admin: bool = False):
+    """Show admin messages for 8h window."""
+    if not is_admin:
+        await callback.answer(bot_config.NOT_AUTHORIZED, show_alert=True)
+        return
+
+    db_manager = get_db_manager()
+    async with db_manager.readonly_session() as session:
+        repo = AdminMessageRepository(session)
+        messages = await repo.get_all()
+        stats = await repo.get_stats()
+
+    text = f"""
+🕐 <b>Тексты для 8-часового окна</b>
+
+Это сообщения, которые рассылаются за счёт
+аккаунтов пользователей в 8ч админского окна.
+
+📊 Всего: {stats['total']}
+✅ Активных: {stats['active']}
+📈 Всего отправок: {stats['total_usage']}
+"""
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_admin_messages_kb(messages),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin:messages:page:"))
+async def admin_messages_page(callback: CallbackQuery, is_admin: bool = False):
+    """Handle admin messages pagination."""
+    if not is_admin:
+        await callback.answer(bot_config.NOT_AUTHORIZED, show_alert=True)
+        return
+
+    page_str = callback.data.split(":")[-1]
+    if page_str == "current":
+        await callback.answer()
+        return
+
+    page = int(page_str)
+
+    db_manager = get_db_manager()
+    async with db_manager.readonly_session() as session:
+        repo = AdminMessageRepository(session)
+        messages = await repo.get_all()
+        stats = await repo.get_stats()
+
+    text = f"""
+🕐 <b>Тексты для 8-часового окна</b>
+
+📊 Всего: {stats['total']} | ✅ Активных: {stats['active']}
+"""
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_admin_messages_kb(messages, page=page),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin:msg:add")
+async def admin_msg_add(callback: CallbackQuery, state: FSMContext, is_admin: bool = False):
+    """Start adding new admin message."""
+    if not is_admin:
+        await callback.answer(bot_config.NOT_AUTHORIZED, show_alert=True)
+        return
+
+    text = """
+➕ <b>Добавление текста для 8ч окна</b>
+
+Введите название для этого шаблона:
+(для идентификации в списке)
+"""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="❌ Отмена", callback_data="admin:messages")
+    )
+
+    await callback.message.edit_text(text, reply_markup=builder.as_markup())
+    await state.set_state(AdminMessageState.adding_name)
+    await callback.answer()
+
+
+@router.message(AdminMessageState.adding_name)
+async def process_admin_msg_name(message: Message, state: FSMContext, is_admin: bool = False):
+    """Process admin message name."""
+    if not is_admin:
+        await message.answer(bot_config.NOT_AUTHORIZED)
+        await state.clear()
+        return
+
+    name = message.text.strip()[:255]
+    await state.update_data(name=name)
+
+    text = """
+💬 <b>Текст сообщения</b>
+
+Теперь отправьте текст сообщения для рассылки.
+
+Вы можете использовать HTML-разметку:
+• <code>&lt;b&gt;жирный&lt;/b&gt;</code>
+• <code>&lt;i&gt;курсив&lt;/i&gt;</code>
+• <code>&lt;a href="url"&gt;ссылка&lt;/a&gt;</code>
+"""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="❌ Отмена", callback_data="admin:messages")
+    )
+
+    await message.answer(text, reply_markup=builder.as_markup())
+    await state.set_state(AdminMessageState.adding_text)
+
+
+@router.message(AdminMessageState.adding_text)
+async def process_admin_msg_text(message: Message, state: FSMContext, is_admin: bool = False):
+    """Process admin message text."""
+    if not is_admin:
+        await message.answer(bot_config.NOT_AUTHORIZED)
+        await state.clear()
+        return
+
+    message_text = message.text or message.caption
+    message_media = None
+
+    # Handle media
+    if message.photo:
+        message_media = {
+            "type": "photo",
+            "file_id": message.photo[-1].file_id,
+        }
+    elif message.video:
+        message_media = {
+            "type": "video",
+            "file_id": message.video.file_id,
+        }
+    elif message.document:
+        message_media = {
+            "type": "document",
+            "file_id": message.document.file_id,
+        }
+
+    data = await state.get_data()
+    name = data.get("name")
+
+    # Save to database
+    db_manager = get_db_manager()
+    async with db_manager.session() as session:
+        repo = AdminMessageRepository(session)
+        admin_msg = await repo.create(
+            name=name,
+            message_text=message_text,
+            message_media=message_media,
+            priority=1,
+        )
+
+    await state.clear()
+
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="📝 К списку", callback_data="admin:messages")
+    )
+    builder.row(
+        InlineKeyboardButton(text="➕ Добавить ещё", callback_data="admin:msg:add")
+    )
+
+    await message.answer(
+        f"✅ Шаблон «{name}» успешно добавлен!\n\n"
+        f"Он будет использоваться в 8-часовом окне.",
+        reply_markup=builder.as_markup(),
+    )
+
+
+@router.callback_query(F.data.startswith("admin:msg:") & F.data.endswith(":view"))
+async def admin_msg_view(callback: CallbackQuery, is_admin: bool = False):
+    """View admin message details."""
+    if not is_admin:
+        await callback.answer(bot_config.NOT_AUTHORIZED, show_alert=True)
+        return
+
+    msg_id = UUID(callback.data.split(":")[2])
+
+    db_manager = get_db_manager()
+    async with db_manager.readonly_session() as session:
+        repo = AdminMessageRepository(session)
+        msg = await repo.get_by_id(msg_id)
+
+    if not msg:
+        await callback.answer("Шаблон не найден", show_alert=True)
+        return
+
+    status = "✅ Активен" if msg.is_active else "❌ Неактивен"
+    preview = (msg.message_text or "")[:300]
+    if len(msg.message_text or "") > 300:
+        preview += "..."
+
+    text = f"""
+📝 <b>{msg.name}</b>
+
+{status}
+📊 Использований: {msg.usage_count}
+⭐ Приоритет: {msg.priority}
+
+<b>Текст:</b>
+<code>{preview}</code>
+"""
+
+    builder = InlineKeyboardBuilder()
+
+    if msg.is_active:
+        builder.row(
+            InlineKeyboardButton(text="❌ Деактивировать", callback_data=f"admin:msg:{msg_id}:toggle")
+        )
+    else:
+        builder.row(
+            InlineKeyboardButton(text="✅ Активировать", callback_data=f"admin:msg:{msg_id}:toggle")
+        )
+
+    builder.row(
+        InlineKeyboardButton(text="✏️ Изменить текст", callback_data=f"admin:msg:{msg_id}:edit_text")
+    )
+    builder.row(
+        InlineKeyboardButton(text="⭐ Приоритет +", callback_data=f"admin:msg:{msg_id}:priority_up"),
+        InlineKeyboardButton(text="⭐ Приоритет -", callback_data=f"admin:msg:{msg_id}:priority_down"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="🗑️ Удалить", callback_data=f"admin:msg:{msg_id}:delete")
+    )
+    builder.row(
+        InlineKeyboardButton(text="◀️ Назад", callback_data="admin:messages")
+    )
+
+    await callback.message.edit_text(text, reply_markup=builder.as_markup())
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin:msg:") & F.data.endswith(":toggle"))
+async def admin_msg_toggle(callback: CallbackQuery, is_admin: bool = False):
+    """Toggle admin message active status."""
+    if not is_admin:
+        await callback.answer(bot_config.NOT_AUTHORIZED, show_alert=True)
+        return
+
+    msg_id = UUID(callback.data.split(":")[2])
+
+    db_manager = get_db_manager()
+    async with db_manager.session() as session:
+        repo = AdminMessageRepository(session)
+        msg = await repo.toggle_active(msg_id)
+
+    if msg:
+        status = "активирован" if msg.is_active else "деактивирован"
+        await callback.answer(f"✅ Шаблон {status}")
+    else:
+        await callback.answer("Ошибка", show_alert=True)
+
+    # Refresh view
+    callback.data = f"admin:msg:{msg_id}:view"
+    await admin_msg_view(callback, is_admin=True)
+
+
+@router.callback_query(F.data.startswith("admin:msg:") & F.data.endswith(":priority_up"))
+async def admin_msg_priority_up(callback: CallbackQuery, is_admin: bool = False):
+    """Increase admin message priority."""
+    if not is_admin:
+        await callback.answer(bot_config.NOT_AUTHORIZED, show_alert=True)
+        return
+
+    msg_id = UUID(callback.data.split(":")[2])
+
+    db_manager = get_db_manager()
+    async with db_manager.session() as session:
+        repo = AdminMessageRepository(session)
+        msg = await repo.get_by_id(msg_id)
+        if msg:
+            await repo.update_message(msg_id, priority=min(msg.priority + 1, 10))
+
+    await callback.answer("⭐ Приоритет увеличен")
+    callback.data = f"admin:msg:{msg_id}:view"
+    await admin_msg_view(callback, is_admin=True)
+
+
+@router.callback_query(F.data.startswith("admin:msg:") & F.data.endswith(":priority_down"))
+async def admin_msg_priority_down(callback: CallbackQuery, is_admin: bool = False):
+    """Decrease admin message priority."""
+    if not is_admin:
+        await callback.answer(bot_config.NOT_AUTHORIZED, show_alert=True)
+        return
+
+    msg_id = UUID(callback.data.split(":")[2])
+
+    db_manager = get_db_manager()
+    async with db_manager.session() as session:
+        repo = AdminMessageRepository(session)
+        msg = await repo.get_by_id(msg_id)
+        if msg:
+            await repo.update_message(msg_id, priority=max(msg.priority - 1, 1))
+
+    await callback.answer("⭐ Приоритет уменьшен")
+    callback.data = f"admin:msg:{msg_id}:view"
+    await admin_msg_view(callback, is_admin=True)
+
+
+@router.callback_query(F.data.startswith("admin:msg:") & F.data.endswith(":delete"))
+async def admin_msg_delete(callback: CallbackQuery, is_admin: bool = False):
+    """Delete admin message."""
+    if not is_admin:
+        await callback.answer(bot_config.NOT_AUTHORIZED, show_alert=True)
+        return
+
+    msg_id = UUID(callback.data.split(":")[2])
+
+    db_manager = get_db_manager()
+    async with db_manager.session() as session:
+        repo = AdminMessageRepository(session)
+        await repo.delete(msg_id)
+
+    await callback.answer("🗑️ Шаблон удалён")
+    await admin_messages(callback, is_admin=True)
+
+
+@router.callback_query(F.data.startswith("admin:msg:") & F.data.endswith(":edit_text"))
+async def admin_msg_edit_text_start(callback: CallbackQuery, state: FSMContext, is_admin: bool = False):
+    """Start editing admin message text."""
+    if not is_admin:
+        await callback.answer(bot_config.NOT_AUTHORIZED, show_alert=True)
+        return
+
+    msg_id = UUID(callback.data.split(":")[2])
+    await state.update_data(edit_msg_id=str(msg_id))
+
+    text = """
+✏️ <b>Редактирование текста</b>
+
+Отправьте новый текст сообщения:
+"""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="❌ Отмена", callback_data=f"admin:msg:{msg_id}:view")
+    )
+
+    await callback.message.edit_text(text, reply_markup=builder.as_markup())
+    await state.set_state(AdminMessageState.editing_text)
+    await callback.answer()
+
+
+@router.message(AdminMessageState.editing_text)
+async def process_admin_msg_edit_text(message: Message, state: FSMContext, is_admin: bool = False):
+    """Process admin message text edit."""
+    if not is_admin:
+        await message.answer(bot_config.NOT_AUTHORIZED)
+        await state.clear()
+        return
+
+    data = await state.get_data()
+    msg_id = UUID(data.get("edit_msg_id"))
+
+    message_text = message.text or message.caption
+    message_media = None
+
+    if message.photo:
+        message_media = {"type": "photo", "file_id": message.photo[-1].file_id}
+    elif message.video:
+        message_media = {"type": "video", "file_id": message.video.file_id}
+    elif message.document:
+        message_media = {"type": "document", "file_id": message.document.file_id}
+
+    db_manager = get_db_manager()
+    async with db_manager.session() as session:
+        repo = AdminMessageRepository(session)
+        await repo.update_message(
+            msg_id,
+            message_text=message_text,
+            message_media=message_media,
+        )
+
+    await state.clear()
+
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="◀️ К шаблону", callback_data=f"admin:msg:{msg_id}:view")
+    )
+
+    await message.answer(
+        "✅ Текст шаблона обновлён!",
+        reply_markup=builder.as_markup(),
     )

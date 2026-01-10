@@ -6,6 +6,7 @@ from bot.states.account_auth import AccountAuthState
 from bot.states.campaign_create import CampaignCreateState, CampaignEditState
 from bot.states.folder_add import FolderAddState
 from bot.states.proxy_add import ProxyAddState
+from bot.states.admin_message import AdminMessageState
 
 __all__ = [
     "AdminAuthState",
@@ -15,4 +16,5 @@ __all__ = [
     "CampaignEditState",
     "FolderAddState",
     "ProxyAddState",
+    "AdminMessageState",
 ]

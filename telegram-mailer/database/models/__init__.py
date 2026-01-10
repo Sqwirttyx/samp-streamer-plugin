@@ -9,6 +9,7 @@ from database.models.campaign import Campaign, CampaignProgress
 from database.models.stats import StatsHourly
 from database.models.invite import InviteKey
 from database.models.error_log import ErrorLog
+from database.models.admin_message import AdminMessage
 
 __all__ = [
     "BaseModel",
@@ -22,4 +23,5 @@ __all__ = [
     "StatsHourly",
     "InviteKey",
     "ErrorLog",
+    "AdminMessage",
 ]
