@@ -46,15 +46,22 @@ class AccountRepository(BaseRepository[Account]):
 
     async def get_active_by_user(self, user_id: UUID) -> Sequence[Account]:
         """
-        Get active accounts for user.
+        Get active and warming accounts for user.
 
         Args:
             user_id: User UUID
 
         Returns:
-            List of active accounts
+            List of usable accounts (active + warming_up)
         """
-        return await self.get_by_user(user_id, status=AccountStatus.ACTIVE)
+        result = await self.session.execute(
+            select(Account)
+            .where(
+                Account.user_id == user_id,
+                Account.status.in_([AccountStatus.ACTIVE, AccountStatus.WARMING_UP]),
+            )
+        )
+        return result.scalars().all()
 
     async def get_available(self, user_id: UUID) -> Sequence[Account]:
         """

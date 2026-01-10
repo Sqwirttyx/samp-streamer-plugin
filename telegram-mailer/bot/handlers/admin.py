@@ -194,27 +194,77 @@ async def admin_stats(callback: CallbackQuery, is_admin: bool = False):
 
 @router.callback_query(F.data == "admin:campaigns")
 async def admin_campaigns(callback: CallbackQuery, is_admin: bool = False):
-    """Show admin campaigns settings."""
+    """Show admin campaigns management."""
     if not is_admin:
         await callback.answer(bot_config.NOT_AUTHORIZED, show_alert=True)
         return
 
-    text = """
-📨 <b>Админ-рассылки</b>
+    db_manager = get_db_manager()
+    async with db_manager.readonly_session() as session:
+        from sqlalchemy import select
+        from database.models import Campaign
+        from common.constants import CampaignStatus
 
-Здесь вы можете настроить рассылки, которые будут отправляться
-в 8-часовом админском окне.
+        # Get all active campaigns across all users
+        result = await session.execute(
+            select(Campaign)
+            .where(Campaign.status.in_([CampaignStatus.ACTIVE, CampaignStatus.SCHEDULED]))
+            .limit(20)
+        )
+        campaigns = result.scalars().all()
 
-<i>Функция в разработке</i>
+    if not campaigns:
+        text = """
+📨 <b>Управление рассылками</b>
+
+✅ Нет активных рассылок в системе.
 """
+    else:
+        lines = [f"📨 <b>Активные рассылки</b> ({len(campaigns)})\n"]
+        for c in campaigns:
+            status_emoji = "▶️" if c.status == CampaignStatus.ACTIVE else "📅"
+            lines.append(f"{status_emoji} {c.name[:20]}")
+
+        text = "\n".join(lines)
 
     builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="⏸ Остановить все", callback_data="admin:campaigns:pause_all")
+    )
+    builder.row(
+        InlineKeyboardButton(text="🔄 Обновить", callback_data="admin:campaigns")
+    )
     builder.row(
         InlineKeyboardButton(text="◀️ Назад", callback_data="menu:admin")
     )
 
     await callback.message.edit_text(text, reply_markup=builder.as_markup())
     await callback.answer()
+
+
+@router.callback_query(F.data == "admin:campaigns:pause_all")
+async def admin_pause_all_campaigns(callback: CallbackQuery, is_admin: bool = False):
+    """Pause all active campaigns."""
+    if not is_admin:
+        await callback.answer(bot_config.NOT_AUTHORIZED, show_alert=True)
+        return
+
+    db_manager = get_db_manager()
+    async with db_manager.session() as session:
+        from sqlalchemy import update
+        from database.models import Campaign
+        from common.constants import CampaignStatus
+
+        result = await session.execute(
+            update(Campaign)
+            .where(Campaign.status == CampaignStatus.ACTIVE)
+            .values(status=CampaignStatus.PAUSED)
+        )
+        await session.flush()
+        paused_count = result.rowcount
+
+    await callback.answer(f"⏸ Остановлено рассылок: {paused_count}")
+    await admin_campaigns(callback, is_admin=True)
 
 
 @router.callback_query(F.data == "admin:settings")

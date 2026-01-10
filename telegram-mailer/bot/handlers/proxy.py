@@ -220,15 +220,19 @@ async def proxy_check(callback: CallbackQuery, db_user=None):
         repo = ProxyRepository(session)
         await repo.update_status(proxy_id, ProxyStatus.CHECKING)
 
-    await callback.answer("🔄 Проверка прокси...")
+    await callback.answer("🔄 Проверяю прокси...")
 
-    # TODO: Implement actual proxy check
-    # For now, just mark as active
-    async with db_manager.session() as session:
-        repo = ProxyRepository(session)
-        await repo.mark_checked(proxy_id, is_alive=True)
+    # Real proxy check
+    from services.proxy_service import ProxyService
 
-    await callback.answer("✅ Прокси работает!")
+    proxy_service = ProxyService()
+    is_working, message = await proxy_service.check_proxy(proxy_id, db_user.id)
+
+    if is_working:
+        await callback.answer("✅ Прокси работает!")
+    else:
+        await callback.answer(f"❌ {message}", show_alert=True)
+
     await proxy_view(callback, db_user)
 
 

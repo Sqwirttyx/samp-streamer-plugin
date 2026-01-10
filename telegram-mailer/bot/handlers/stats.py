@@ -207,16 +207,44 @@ async def stats_campaigns(callback: CallbackQuery, db_user=None):
 @router.callback_query(F.data == "stats:errors")
 async def stats_errors(callback: CallbackQuery, db_user=None):
     """Show error log."""
-    # In a real implementation, you would fetch error logs from database
-    text = """
+    db_manager = get_db_manager()
+
+    async with db_manager.readonly_session() as session:
+        from database.repositories import ErrorLogRepository
+
+        error_repo = ErrorLogRepository(session)
+        errors = await error_repo.get_recent(db_user.id, hours=24, limit=20)
+
+    if not errors:
+        text = """
 ❌ <b>Журнал ошибок</b>
 
-Последние ошибки будут отображаться здесь.
-
-<i>Функция в разработке</i>
+✅ За последние 24 часа ошибок не было!
 """
+    else:
+        lines = ["❌ <b>Журнал ошибок (24ч)</b>\n"]
+
+        error_emojis = {
+            "flood_wait": "⏳",
+            "spam_block": "🚫",
+            "chat_forbidden": "🔒",
+            "user_banned": "⛔",
+            "timeout": "⌛",
+            "network": "🌐",
+        }
+
+        for error in errors:
+            emoji = error_emojis.get(error.error_type, "❌")
+            time_str = error.created_at.strftime("%H:%M")
+            msg = error.error_message[:30] + "..." if error.error_message and len(error.error_message) > 30 else (error.error_message or "")
+            lines.append(f"{emoji} <code>{time_str}</code> {error.error_type}: {msg}")
+
+        text = "\n".join(lines)
 
     builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="🔄 Обновить", callback_data="stats:errors")
+    )
     builder.row(
         InlineKeyboardButton(text="◀️ Назад", callback_data="menu:stats")
     )

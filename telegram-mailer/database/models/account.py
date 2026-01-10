@@ -13,6 +13,7 @@ from database.models.base import BaseModel
 
 if TYPE_CHECKING:
     from database.models.campaign import Campaign
+    from database.models.error_log import ErrorLog
     from database.models.folder import Folder
     from database.models.proxy import Proxy
     from database.models.stats import StatsHourly
@@ -291,6 +292,10 @@ class Account(BaseModel):
     )
     stats: Mapped[list["StatsHourly"]] = relationship(
         "StatsHourly",
+        back_populates="account",
+    )
+    error_logs: Mapped[list["ErrorLog"]] = relationship(
+        "ErrorLog",
         back_populates="account",
     )
 
