@@ -30,6 +30,11 @@ def get_auth_manager() -> AccountAuthManager:
     """Get or create auth manager instance."""
     global _auth_manager
     if _auth_manager is None:
+        if not bot_config.API_ID or not bot_config.API_HASH:
+            raise ValueError(
+                "TELEGRAM_API_ID and TELEGRAM_API_HASH must be set in .env file. "
+                "Get them from https://my.telegram.org"
+            )
         _auth_manager = AccountAuthManager(
             api_id=bot_config.API_ID,
             api_hash=bot_config.API_HASH,
@@ -198,94 +203,95 @@ async def process_2fa(message: Message, state: FSMContext, db_user=None):
 
 async def _handle_auth_success(message: Message, state: FSMContext, result: dict, db_user):
     """Handle successful authorization."""
-    account_data = result["account"]
-    data = await state.get_data()
-
-    # Calculate initial trust score
-    trust_calc = TrustScoreCalculator()
-
-    # Estimate account age from dialogs count
-    dialogs_count = account_data.get("dialogs_count", 0)
-    estimated_age = min(dialogs_count // 2, 365)  # Rough estimate
-
-    score_data = {
-        "age_days": estimated_age,
-        "successful_messages": 0,
-        "total_bans": 0,
-        "days_since_last_ban": 999,
-        "organic_activity_count": dialogs_count,
-        "contacts_count": 0,
-        "groups_count": 0,
-        "is_premium": account_data.get("is_premium", False),
-        "flood_wait_count_today": 0,
-        "is_quarantined": False,
-    }
-
-    trust_score = trust_calc.calculate_score(score_data)
-    trust_level = trust_calc.get_trust_level(trust_score)
-
-    # Determine initial status
-    if estimated_age < 30:
-        status = AccountStatus.WARMING_UP
-        warming_phase = WarmingPhase.PHASE_1
-    elif estimated_age < 90:
-        status = AccountStatus.WARMING_UP
-        warming_phase = WarmingPhase.PHASE_3
-    else:
-        status = AccountStatus.ACTIVE
-        warming_phase = WarmingPhase.PHASE_4
-
-    # Save session to storage
-    storage = get_session_storage()
-    account_id = uuid4()
-
     try:
-        session_path = await storage.save_session_string(
-            user_id=db_user.id,
-            account_id=account_id,
-            session_string=account_data["session_string"],
-        )
-    except Exception as e:
-        logger.error(f"Failed to save session: {e}")
-        await message.answer(f"❌ Ошибка сохранения сессии: {e}")
-        await state.clear()
-        return
+        account_data = result["account"]
+        data = await state.get_data()
 
-    # Create account in database
-    db_manager = get_db_manager()
-    async with db_manager.session() as session:
-        repo = AccountRepository(session)
+        # Calculate initial trust score
+        trust_calc = TrustScoreCalculator()
 
-        from storage.session_storage import SessionStorage
+        # Estimate account age from dialogs count
+        dialogs_count = account_data.get("dialogs_count", 0)
+        estimated_age = min(dialogs_count // 2, 365)  # Rough estimate
 
-        account = await repo.create(
-            id=account_id,
-            user_id=db_user.id,
-            telegram_id=account_data["telegram_id"],
-            phone=account_data["phone"],
-            phone_hash=SessionStorage.hash_phone(account_data["phone"]),
-            username=account_data.get("username"),
-            first_name=account_data.get("first_name"),
-            session_path=str(session_path),
-            session_string=account_data["session_string"],
-            status=status,
-            trust_score=trust_score,
-            trust_level=trust_level,
-            is_premium=account_data.get("is_premium", False),
-            warming_phase=warming_phase,
-            age_days=estimated_age,
-            device_fingerprint=account_data.get("device_fingerprint"),
-        )
+        score_data = {
+            "age_days": estimated_age,
+            "successful_messages": 0,
+            "total_bans": 0,
+            "days_since_last_ban": 999,
+            "organic_activity_count": dialogs_count,
+            "contacts_count": 0,
+            "groups_count": 0,
+            "is_premium": account_data.get("is_premium", False),
+            "flood_wait_count_today": 0,
+            "is_quarantined": False,
+        }
 
-    # Check aggressive mode eligibility
-    eligibility = trust_calc.check_aggressive_eligibility(score_data)
+        trust_score = trust_calc.calculate_score(score_data)
+        trust_level = trust_calc.get_trust_level(trust_score)
 
-    status_text = {
-        AccountStatus.WARMING_UP: "🔄 Прогрев",
-        AccountStatus.ACTIVE: "✅ Активен",
-    }.get(status, "❓")
+        # Determine initial status
+        if estimated_age < 30:
+            status = AccountStatus.WARMING_UP
+            warming_phase = WarmingPhase.PHASE_1
+        elif estimated_age < 90:
+            status = AccountStatus.WARMING_UP
+            warming_phase = WarmingPhase.PHASE_3
+        else:
+            status = AccountStatus.ACTIVE
+            warming_phase = WarmingPhase.PHASE_4
 
-    text = f"""
+        # Save session to storage
+        storage = get_session_storage()
+        account_id = uuid4()
+
+        try:
+            session_path = await storage.save_session_string(
+                user_id=db_user.id,
+                account_id=account_id,
+                session_string=account_data["session_string"],
+            )
+        except Exception as e:
+            logger.error(f"Failed to save session: {e}")
+            await message.answer(f"❌ Ошибка сохранения сессии: {e}")
+            await state.clear()
+            return
+
+        # Create account in database
+        db_manager = get_db_manager()
+        async with db_manager.session() as session:
+            repo = AccountRepository(session)
+
+            from storage.session_storage import SessionStorage
+
+            account = await repo.create(
+                id=account_id,
+                user_id=db_user.id,
+                telegram_id=account_data["telegram_id"],
+                phone=account_data["phone"],
+                phone_hash=SessionStorage.hash_phone(account_data["phone"]),
+                username=account_data.get("username"),
+                first_name=account_data.get("first_name"),
+                session_path=str(session_path),
+                session_string=account_data["session_string"],
+                status=status,
+                trust_score=trust_score,
+                trust_level=trust_level,
+                is_premium=account_data.get("is_premium", False),
+                warming_phase=warming_phase,
+                age_days=estimated_age,
+                device_fingerprint=account_data.get("device_fingerprint"),
+            )
+
+        # Check aggressive mode eligibility
+        eligibility = trust_calc.check_aggressive_eligibility(score_data)
+
+        status_text = {
+            AccountStatus.WARMING_UP: "🔄 Прогрев",
+            AccountStatus.ACTIVE: "✅ Активен",
+        }.get(status, "❓")
+
+        text = f"""
 ✅ <b>Аккаунт успешно добавлен!</b>
 
 👤 ID: <code>{account_data['telegram_id']}</code>
@@ -300,20 +306,29 @@ async def _handle_auth_success(message: Message, state: FSMContext, result: dict
 ⚠️ <b>Уровень риска:</b> {eligibility['risk_level']}
 """
 
-    if eligibility["warnings"]:
-        text += "\n⚠️ <b>Предупреждения:</b>\n"
-        for warning in eligibility["warnings"][:3]:
-            text += f"• {warning}\n"
+        if eligibility["warnings"]:
+            text += "\n⚠️ <b>Предупреждения:</b>\n"
+            for warning in eligibility["warnings"][:3]:
+                text += f"• {warning}\n"
 
-    # Keyboard for next actions
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📱 Мои аккаунты", callback_data="menu:accounts")],
-        [InlineKeyboardButton(text="➕ Добавить ещё", callback_data="account:add_by_code")],
-        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu:main")],
-    ])
+        # Keyboard for next actions
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📱 Мои аккаунты", callback_data="menu:accounts")],
+            [InlineKeyboardButton(text="➕ Добавить ещё", callback_data="account:add_by_code")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu:main")],
+        ])
 
-    await message.answer(text, reply_markup=keyboard)
-    await state.clear()
+        await message.answer(text, reply_markup=keyboard)
+        await state.clear()
+
+    except Exception as e:
+        logger.error(f"Error in _handle_auth_success: {e}", exc_info=True)
+        await message.answer(
+            f"❌ <b>Ошибка при сохранении аккаунта:</b>\n"
+            f"<code>{str(e)}</code>\n\n"
+            f"Проверьте логи бота для деталей."
+        )
+        await state.clear()
 
 
 @router.callback_query(F.data == "account:cancel_auth")
