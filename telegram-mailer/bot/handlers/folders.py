@@ -309,3 +309,142 @@ async def folder_delete(callback: CallbackQuery, db_user=None):
 
     await callback.answer("🗑️ Папка удалена")
     await menu_folders(callback, db_user, is_registered=True)
+
+
+@router.callback_query(F.data.startswith("folder:") & F.data.endswith(":sync"))
+async def folder_sync(callback: CallbackQuery, db_user=None):
+    """Sync folder chats from Telegram."""
+    folder_id = UUID(callback.data.split(":")[1])
+
+    db_manager = get_db_manager()
+    async with db_manager.readonly_session() as session:
+        folder_repo = FolderRepository(session)
+        folder = await folder_repo.get_by_id(folder_id)
+
+        if not folder or folder.user_id != db_user.id:
+            await callback.answer("Папка не найдена", show_alert=True)
+            return
+
+        # Check if folder has bound account
+        if not folder.account_id:
+            await callback.answer(
+                "❌ Сначала привяжите аккаунт к папке для синхронизации",
+                show_alert=True,
+            )
+            return
+
+        account_id = folder.account_id
+
+    await callback.answer("🔄 Синхронизация папки...")
+
+    # Update status to syncing
+    async with db_manager.session() as session:
+        folder_repo = FolderRepository(session)
+        await folder_repo.set_syncing(folder_id)
+
+    try:
+        from services.folder_service import FolderService
+
+        service = FolderService()
+        chat_count, message = await service.sync_folder(folder_id, db_user.id, account_id)
+
+        if chat_count > 0:
+            await callback.message.edit_text(
+                f"✅ Синхронизация завершена!\n\nНайдено чатов: {chat_count}",
+                reply_markup=get_folder_actions_kb(folder_id, True),
+            )
+        else:
+            # Set error status
+            async with db_manager.session() as session:
+                folder_repo = FolderRepository(session)
+                await folder_repo.set_error(folder_id)
+
+            await callback.message.edit_text(
+                f"❌ {message}",
+                reply_markup=get_folder_actions_kb(folder_id, True),
+            )
+
+    except Exception as e:
+        # Set error status
+        async with db_manager.session() as session:
+            folder_repo = FolderRepository(session)
+            await folder_repo.set_error(folder_id)
+
+        await callback.message.edit_text(
+            f"❌ Ошибка синхронизации: {str(e)[:200]}",
+            reply_markup=get_folder_actions_kb(folder_id, True),
+        )
+
+
+@router.callback_query(F.data.startswith("folder:") & F.data.endswith(":chats"))
+async def folder_chats(callback: CallbackQuery, db_user=None):
+    """Show list of chats in folder."""
+    folder_id = UUID(callback.data.split(":")[1])
+
+    db_manager = get_db_manager()
+    async with db_manager.readonly_session() as session:
+        repo = FolderRepository(session)
+        folder = await repo.get_by_id(folder_id)
+
+    if not folder or folder.user_id != db_user.id:
+        await callback.answer("Папка не найдена", show_alert=True)
+        return
+
+    chat_ids = folder.chat_ids or []
+
+    if not chat_ids:
+        await callback.answer(
+            "Папка пуста. Сначала синхронизируйте папку.",
+            show_alert=True,
+        )
+        return
+
+    # Show first 20 chats
+    chats_preview = chat_ids[:20]
+    text = f"📋 <b>Чаты в папке «{folder.name}»</b>\n\n"
+    text += f"Всего чатов: {len(chat_ids)}\n\n"
+
+    for i, chat_id in enumerate(chats_preview, 1):
+        text += f"{i}. <code>{chat_id}</code>\n"
+
+    if len(chat_ids) > 20:
+        text += f"\n... и ещё {len(chat_ids) - 20} чатов"
+
+    from aiogram.types import InlineKeyboardButton
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="◀️ Назад", callback_data=f"folder:{folder_id}:view")
+    )
+
+    await callback.message.edit_text(text, reply_markup=builder.as_markup())
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("folders:page:"))
+async def folders_page(callback: CallbackQuery, db_user=None):
+    """Handle folders pagination."""
+    page_str = callback.data.split(":")[-1]
+    if page_str == "current":
+        await callback.answer()
+        return
+
+    page = int(page_str)
+
+    db_manager = get_db_manager()
+    async with db_manager.readonly_session() as session:
+        repo = FolderRepository(session)
+        folders = await repo.get_by_user(db_user.id)
+
+    text = f"""
+📁 <b>Мои папки</b>
+
+Всего папок: {len(folders)}
+"""
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_folders_list_kb(folders, page=page),
+    )
+    await callback.answer()

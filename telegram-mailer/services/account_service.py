@@ -9,8 +9,8 @@ from common.logger import get_logger
 from database import get_db_manager
 from database.models import Account
 from database.repositories import AccountRepository, ProxyRepository
-from storage import SessionStorage
-from worker.session_manager import SessionManager
+from storage.session_storage import get_session_storage
+from worker.session_manager import get_session_manager
 
 logger = get_logger(__name__)
 
@@ -24,7 +24,7 @@ class AccountService:
 
     def __init__(self):
         """Initialize account service."""
-        self.session_storage = SessionStorage()
+        self.session_storage = get_session_storage()
 
     async def get_by_id(
         self,
@@ -272,38 +272,53 @@ class AccountService:
         if not account:
             return False, "Account not found"
 
-        # Load session
-        session_data = await self.session_storage.get_session(account.session_path)
-        if not session_data:
-            return False, "Session file not found"
-
         # Build proxy config
         proxy = None
-        if account.proxy:
-            proxy = {
-                "type": account.proxy.type.value,
-                "host": account.proxy.host,
-                "port": account.proxy.port,
-                "username": account.proxy.username,
-                "password": account.proxy.password,
-            }
+        if account.proxy_id:
+            db_manager = get_db_manager()
+            async with db_manager.readonly_session() as session:
+                proxy_repo = ProxyRepository(session)
+                proxy_obj = await proxy_repo.get_by_id(account.proxy_id)
+                if proxy_obj:
+                    proxy = {
+                        "type": proxy_obj.type.value,
+                        "host": proxy_obj.host,
+                        "port": proxy_obj.port,
+                        "username": proxy_obj.username,
+                        "password": proxy_obj.password,
+                    }
 
-        # Try to connect
-        session_manager = SessionManager()
+        # Try to connect using session manager
+        session_manager = get_session_manager()
+        client = None
+
         try:
-            is_valid = await session_manager.validate_session(
-                session_data=session_data,
-                proxy=proxy,
-            )
+            # Load session and connect
+            client = await session_manager.load_session(user_id, account_id, proxy)
+
+            # Validate by checking authorization
+            is_valid = await session_manager.validate_session(client)
+
             if is_valid:
-                await self.update_status(account_id, AccountStatus.ACTIVE)
+                # Update health score
+                db_manager = get_db_manager()
+                async with db_manager.session() as session:
+                    repo = AccountRepository(session)
+                    await repo.update_health(account_id, 100)
+
                 return True, "Account is valid"
             else:
-                await self.update_status(account_id, AccountStatus.INVALID)
+                await self.update_status(account_id, AccountStatus.ERROR)
                 return False, "Session expired or invalid"
+
         except Exception as e:
             logger.error(f"Account validation error: {e}")
+            await self.update_status(account_id, AccountStatus.ERROR)
             return False, f"Validation error: {str(e)}"
+
+        finally:
+            if client:
+                await session_manager.close_session(account_id)
 
     async def get_active_accounts(self, user_id: UUID) -> list[Account]:
         """

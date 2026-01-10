@@ -339,3 +339,123 @@ async def account_delete(callback: CallbackQuery, db_user=None):
 
     # Return to accounts list
     await menu_accounts(callback, db_user, is_registered=True)
+
+
+@router.callback_query(F.data.startswith("account:") & F.data.endswith(":check"))
+async def account_check_health(callback: CallbackQuery, db_user=None):
+    """Check account health/validity."""
+    account_id = UUID(callback.data.split(":")[1])
+
+    await callback.answer("🔄 Проверяю аккаунт...")
+
+    from services.account_service import AccountService
+
+    service = AccountService()
+    try:
+        is_valid, message = await service.validate_account(account_id, db_user.id)
+
+        if is_valid:
+            await callback.answer("✅ Аккаунт работает!", show_alert=True)
+        else:
+            await callback.answer(f"❌ {message}", show_alert=True)
+
+        # Refresh view
+        await account_view(callback, db_user)
+
+    except Exception as e:
+        await callback.answer(f"❌ Ошибка: {str(e)[:100]}", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("account:") & F.data.endswith(":change_proxy"))
+async def account_change_proxy(callback: CallbackQuery, db_user=None):
+    """Show proxy selection for account."""
+    account_id = UUID(callback.data.split(":")[1])
+
+    db_manager = get_db_manager()
+    async with db_manager.readonly_session() as session:
+        proxy_repo = ProxyRepository(session)
+        proxies = await proxy_repo.get_active_by_user(db_user.id)
+
+        account_repo = AccountRepository(session)
+        account = await account_repo.get_by_id(account_id)
+
+    if not account or account.user_id != db_user.id:
+        await callback.answer("Аккаунт не найден", show_alert=True)
+        return
+
+    text = "🌐 <b>Выберите прокси для аккаунта:</b>"
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_proxy_selection_kb(proxies, account_id, account.proxy_id),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("account:") & F.data.contains(":set_proxy:"))
+async def account_set_proxy(callback: CallbackQuery, db_user=None):
+    """Set proxy for account."""
+    parts = callback.data.split(":")
+    account_id = UUID(parts[1])
+    proxy_id_str = parts[3]
+
+    proxy_id = None if proxy_id_str == "none" else UUID(proxy_id_str)
+
+    db_manager = get_db_manager()
+    async with db_manager.session() as session:
+        repo = AccountRepository(session)
+        await repo.bind_proxy(account_id, proxy_id)
+
+    if proxy_id:
+        await callback.answer("✅ Прокси привязан")
+    else:
+        await callback.answer("✅ Прокси отвязан")
+
+    await account_view(callback, db_user)
+
+
+@router.callback_query(F.data.startswith("account:") & F.data.endswith(":campaigns"))
+async def account_campaigns(callback: CallbackQuery, db_user=None):
+    """View campaigns for this account."""
+    account_id = UUID(callback.data.split(":")[1])
+
+    from aiogram.types import InlineKeyboardButton
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+    from database.repositories import CampaignRepository
+
+    db_manager = get_db_manager()
+    async with db_manager.readonly_session() as session:
+        repo = CampaignRepository(session)
+        campaigns = await repo.get_by_account(account_id)
+
+    if not campaigns:
+        await callback.answer("У этого аккаунта нет рассылок", show_alert=True)
+        return
+
+    builder = InlineKeyboardBuilder()
+    for campaign in campaigns[:10]:  # Limit to 10
+        status_emoji = {
+            "draft": "📝",
+            "active": "▶️",
+            "paused": "⏸️",
+            "completed": "✅",
+            "error": "❌",
+        }.get(campaign.status.value, "❓")
+
+        builder.row(
+            InlineKeyboardButton(
+                text=f"{status_emoji} {campaign.name}",
+                callback_data=f"campaign:{campaign.id}:view",
+            )
+        )
+
+    builder.row(
+        InlineKeyboardButton(text="◀️ Назад", callback_data=f"account:{account_id}:view")
+    )
+
+    await callback.message.edit_text(
+        f"📨 <b>Рассылки аккаунта</b>\n\nВсего: {len(campaigns)}",
+        reply_markup=builder.as_markup(),
+    )
+    await callback.answer()

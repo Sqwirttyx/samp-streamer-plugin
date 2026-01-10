@@ -156,7 +156,7 @@ class FolderService:
         if not folder:
             raise NotFoundError("Folder not found")
 
-        # Get account
+        # Get account with proxy
         db_manager = get_db_manager()
 
         async with db_manager.readonly_session() as session:
@@ -166,24 +166,38 @@ class FolderService:
             if not account or account.user_id != user_id:
                 raise NotFoundError("Account not found")
 
-        # Build proxy config
-        proxy = None
-        if account.proxy:
-            proxy = {
-                "type": account.proxy.type.value,
-                "host": account.proxy.host,
-                "port": account.proxy.port,
-                "username": account.proxy.username,
-                "password": account.proxy.password,
-            }
+            # Build proxy config if account has proxy
+            proxy = None
+            if account.proxy_id:
+                from database.repositories import ProxyRepository
+                proxy_repo = ProxyRepository(session)
+                proxy_obj = await proxy_repo.get_by_id(account.proxy_id)
+                if proxy_obj:
+                    proxy = {
+                        "type": proxy_obj.type.value,
+                        "host": proxy_obj.host,
+                        "port": proxy_obj.port,
+                        "username": proxy_obj.username,
+                        "password": proxy_obj.password,
+                    }
 
-        # Parse folder
-        parser = FolderParser()
+        # Load session and sync folder
+        from worker.session_manager import get_session_manager
+
+        session_manager = get_session_manager()
+        client = None
+
         try:
-            chat_ids = await parser.parse_folder(
+            # Load Telethon client
+            client = await session_manager.load_session(user_id, account_id, proxy)
+
+            # Create parser with client
+            parser = FolderParser(client)
+
+            # Sync folder - join and get chats
+            filter_id, chat_ids, folder_name = await parser.sync_folder(
                 folder_link=folder.folder_link,
-                session_path=account.session_path,
-                proxy=proxy,
+                existing_filter_id=folder.folder_id,
             )
 
             if not chat_ids:
@@ -192,7 +206,7 @@ class FolderService:
             # Update folder with chat IDs
             async with db_manager.session() as session:
                 repo = FolderRepository(session)
-                await repo.update_chat_ids(folder_id, chat_ids)
+                await repo.update_sync_data(folder_id, filter_id, chat_ids)
 
             logger.info(f"Folder {folder_id} synced: {len(chat_ids)} chats")
             return len(chat_ids), f"Found {len(chat_ids)} chats"
@@ -200,6 +214,10 @@ class FolderService:
         except Exception as e:
             logger.error(f"Folder sync error: {e}")
             return 0, f"Sync error: {str(e)}"
+
+        finally:
+            if client:
+                await session_manager.close_session(account_id)
 
     async def bind_account(
         self,
