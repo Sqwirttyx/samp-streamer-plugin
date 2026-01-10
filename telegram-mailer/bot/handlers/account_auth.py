@@ -1,5 +1,6 @@
 """Account authorization by code handlers."""
 
+import html
 import re
 from uuid import uuid4
 
@@ -323,9 +324,11 @@ async def _handle_auth_success(message: Message, state: FSMContext, result: dict
 
     except Exception as e:
         logger.error(f"Error in _handle_auth_success: {e}", exc_info=True)
+        # Escape HTML to prevent parsing errors with messages like <class ...>
+        error_text = html.escape(str(e))
         await message.answer(
             f"❌ <b>Ошибка при сохранении аккаунта:</b>\n"
-            f"<code>{str(e)}</code>\n\n"
+            f"<code>{error_text}</code>\n\n"
             f"Проверьте логи бота для деталей."
         )
         await state.clear()

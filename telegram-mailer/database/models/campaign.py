@@ -103,7 +103,7 @@ class Campaign(BaseModel):
         nullable=True,
     )
     status: Mapped[CampaignStatus] = mapped_column(
-        Enum(CampaignStatus, name="campaign_status"),
+        Enum(CampaignStatus, name="campaign_status", values_callable=lambda x: [e.value for e in x]),
         default=CampaignStatus.DRAFT,
         nullable=False,
         index=True,

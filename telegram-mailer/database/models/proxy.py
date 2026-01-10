@@ -42,7 +42,7 @@ class Proxy(BaseModel):
         index=True,
     )
     type: Mapped[ProxyType] = mapped_column(
-        Enum(ProxyType, name="proxy_type"),
+        Enum(ProxyType, name="proxy_type", values_callable=lambda x: [e.value for e in x]),
         nullable=False,
     )
     host: Mapped[str] = mapped_column(
@@ -62,7 +62,7 @@ class Proxy(BaseModel):
         nullable=True,
     )
     status: Mapped[ProxyStatus] = mapped_column(
-        Enum(ProxyStatus, name="proxy_status"),
+        Enum(ProxyStatus, name="proxy_status", values_callable=lambda x: [e.value for e in x]),
         default=ProxyStatus.ACTIVE,
         nullable=False,
     )

@@ -88,7 +88,7 @@ class Account(BaseModel):
     # ==========================================================================
 
     status: Mapped[AccountStatus] = mapped_column(
-        Enum(AccountStatus, name="account_status"),
+        Enum(AccountStatus, name="account_status", values_callable=lambda x: [e.value for e in x]),
         default=AccountStatus.WARMING_UP,
         nullable=False,
         index=True,
@@ -101,7 +101,7 @@ class Account(BaseModel):
         nullable=False,
     )
     trust_level: Mapped[TrustLevel] = mapped_column(
-        Enum(TrustLevel, name="trust_level"),
+        Enum(TrustLevel, name="trust_level", values_callable=lambda x: [e.value for e in x]),
         default=TrustLevel.QUARANTINE,
         nullable=False,
         index=True,
@@ -119,7 +119,7 @@ class Account(BaseModel):
     # ==========================================================================
 
     warming_phase: Mapped[WarmingPhase] = mapped_column(
-        Enum(WarmingPhase, name="warming_phase"),
+        Enum(WarmingPhase, name="warming_phase", values_callable=lambda x: [e.value for e in x]),
         default=WarmingPhase.PHASE_1,
         nullable=False,
     )

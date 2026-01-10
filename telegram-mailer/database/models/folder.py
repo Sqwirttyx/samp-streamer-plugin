@@ -75,7 +75,7 @@ class Folder(BaseModel):
         nullable=True,
     )
     status: Mapped[FolderStatus] = mapped_column(
-        Enum(FolderStatus, name="folder_status"),
+        Enum(FolderStatus, name="folder_status", values_callable=lambda x: [e.value for e in x]),
         default=FolderStatus.ACTIVE,
         nullable=False,
     )
