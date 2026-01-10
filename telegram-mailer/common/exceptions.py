@@ -260,3 +260,16 @@ class ChatAccessError(TelegramError):
     """Cannot access chat (banned, private, etc.)."""
 
     pass
+
+
+# Generic aliases for common use
+class NotFoundError(TelegramMailerError):
+    """Generic not found error."""
+
+    pass
+
+
+class ValidationError(TelegramMailerError):
+    """Generic validation error."""
+
+    pass

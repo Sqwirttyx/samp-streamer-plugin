@@ -26,6 +26,7 @@ COPY redis_client/ ./redis_client/
 COPY storage/ ./storage/
 COPY services/ ./services/
 COPY core/ ./core/
+COPY worker/ ./worker/
 COPY bot/ ./bot/
 
 # Copy alembic config for migrations
