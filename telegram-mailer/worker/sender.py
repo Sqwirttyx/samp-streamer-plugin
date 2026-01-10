@@ -24,6 +24,7 @@ from common.constants import (
 )
 from common.exceptions import AccountBannedError, FloodWaitError, SpamBlockError
 from common.logger import get_logger
+from common.spintax import spin, has_spintax
 from worker.message_handler import MessageHandler
 from worker.session_manager import SessionManager
 
@@ -337,9 +338,14 @@ class Sender:
                     if self.should_rest():
                         await self.rest()
 
+                    # Apply spintax for unique message variation
+                    current_text = message_text
+                    if message_text and has_spintax(message_text):
+                        current_text = spin(message_text)
+
                     # Send message
                     result = await self.send_to_chat(
-                        chat_id, message_text, message_media
+                        chat_id, current_text, message_media
                     )
 
                     # Handle result

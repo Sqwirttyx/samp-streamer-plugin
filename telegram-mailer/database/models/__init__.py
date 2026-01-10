@@ -10,6 +10,7 @@ from database.models.stats import StatsHourly
 from database.models.invite import InviteKey
 from database.models.error_log import ErrorLog
 from database.models.admin_message import AdminMessage
+from database.models.category import ChatCategory, FolderCategory
 
 __all__ = [
     "BaseModel",
@@ -24,4 +25,6 @@ __all__ = [
     "InviteKey",
     "ErrorLog",
     "AdminMessage",
+    "ChatCategory",
+    "FolderCategory",
 ]

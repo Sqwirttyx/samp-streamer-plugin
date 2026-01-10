@@ -10,6 +10,7 @@ from database.repositories.stats_repo import StatsRepository
 from database.repositories.invite_repo import InviteKeyRepository
 from database.repositories.error_log_repo import ErrorLogRepository
 from database.repositories.admin_message_repo import AdminMessageRepository
+from database.repositories.category_repo import CategoryRepository, FolderCategoryRepository
 
 __all__ = [
     "BaseRepository",
@@ -22,4 +23,6 @@ __all__ = [
     "InviteKeyRepository",
     "ErrorLogRepository",
     "AdminMessageRepository",
+    "CategoryRepository",
+    "FolderCategoryRepository",
 ]

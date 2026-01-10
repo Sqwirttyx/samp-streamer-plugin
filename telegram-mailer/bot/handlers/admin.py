@@ -36,6 +36,9 @@ def get_admin_menu_kb():
         InlineKeyboardButton(text="🕐 Тексты 8ч окна", callback_data="admin:messages")
     )
     builder.row(
+        InlineKeyboardButton(text="🏷 Категории", callback_data="admin:categories")
+    )
+    builder.row(
         InlineKeyboardButton(text="⚙️ Настройки системы", callback_data="admin:settings")
     )
     builder.row(
@@ -597,12 +600,24 @@ async def admin_msg_view(callback: CallbackQuery, is_admin: bool = False):
     if len(msg.message_text or "") > 300:
         preview += "..."
 
+    # Spintax indicator
+    spintax_info = "🔄 Есть спинтакс" if msg.has_spintax else "📝 Без спинтакса"
+
+    # Targeting info
+    if msg.targets_all:
+        target_info = "🌐 Все категории"
+    else:
+        cats = ", ".join(msg.target_categories or [])
+        target_info = f"🎯 {cats}"
+
     text = f"""
 📝 <b>{msg.name}</b>
 
 {status}
 📊 Использований: {msg.usage_count}
 ⭐ Приоритет: {msg.priority}
+{spintax_info}
+{target_info}
 
 <b>Текст:</b>
 <code>{preview}</code>
@@ -621,6 +636,10 @@ async def admin_msg_view(callback: CallbackQuery, is_admin: bool = False):
 
     builder.row(
         InlineKeyboardButton(text="✏️ Изменить текст", callback_data=f"admin:msg:{msg_id}:edit_text")
+    )
+    builder.row(
+        InlineKeyboardButton(text="🔄 Спинтакс", callback_data=f"admin:msg:{msg_id}:spintax"),
+        InlineKeyboardButton(text="🎯 Таргет", callback_data=f"admin:msg:{msg_id}:target"),
     )
     builder.row(
         InlineKeyboardButton(text="⭐ Приоритет +", callback_data=f"admin:msg:{msg_id}:priority_up"),
@@ -788,3 +807,269 @@ async def process_admin_msg_edit_text(message: Message, state: FSMContext, is_ad
         "✅ Текст шаблона обновлён!",
         reply_markup=builder.as_markup(),
     )
+
+
+# ========== Categories Management ==========
+
+from database.repositories import CategoryRepository
+from common.spintax import spin_preview, spin_count, has_spintax
+
+
+@router.callback_query(F.data == "admin:categories")
+async def admin_categories(callback: CallbackQuery, is_admin: bool = False):
+    """Show categories management."""
+    if not is_admin:
+        await callback.answer(bot_config.NOT_AUTHORIZED, show_alert=True)
+        return
+
+    db_manager = get_db_manager()
+    async with db_manager.readonly_session() as session:
+        repo = CategoryRepository(session)
+        categories = await repo.get_active()
+
+    lines = ["🏷 <b>Категории для таргетинга</b>\n"]
+
+    for cat in categories:
+        keywords_count = len(cat.keywords or [])
+        lines.append(f"{cat.icon} <b>{cat.name}</b> ({cat.slug})")
+        lines.append(f"   📝 {keywords_count} ключевых слов")
+
+    text = "\n".join(lines)
+
+    builder = InlineKeyboardBuilder()
+    for cat in categories[:8]:
+        builder.row(
+            InlineKeyboardButton(
+                text=f"{cat.icon} {cat.name}",
+                callback_data=f"admin:cat:{cat.slug}:view",
+            )
+        )
+    builder.row(
+        InlineKeyboardButton(text="🔄 Сбросить к дефолтным", callback_data="admin:categories:reset")
+    )
+    builder.row(
+        InlineKeyboardButton(text="◀️ Назад", callback_data="menu:admin")
+    )
+
+    await callback.message.edit_text(text, reply_markup=builder.as_markup())
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin:cat:") & F.data.endswith(":view"))
+async def admin_category_view(callback: CallbackQuery, is_admin: bool = False):
+    """View category details."""
+    if not is_admin:
+        await callback.answer(bot_config.NOT_AUTHORIZED, show_alert=True)
+        return
+
+    slug = callback.data.split(":")[2]
+
+    db_manager = get_db_manager()
+    async with db_manager.readonly_session() as session:
+        repo = CategoryRepository(session)
+        cat = await repo.get_by_slug(slug)
+
+    if not cat:
+        await callback.answer("Категория не найдена", show_alert=True)
+        return
+
+    keywords = cat.keywords or []
+    keywords_preview = ", ".join(keywords[:10])
+    if len(keywords) > 10:
+        keywords_preview += f"... (+{len(keywords) - 10})"
+
+    text = f"""
+{cat.icon} <b>{cat.name}</b>
+
+🔗 Slug: <code>{cat.slug}</code>
+📊 Ключевых слов: {len(keywords)}
+
+<b>Ключевые слова:</b>
+<code>{keywords_preview}</code>
+
+{cat.description or ""}
+"""
+
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="◀️ Назад", callback_data="admin:categories")
+    )
+
+    await callback.message.edit_text(text, reply_markup=builder.as_markup())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin:categories:reset")
+async def admin_categories_reset(callback: CallbackQuery, is_admin: bool = False):
+    """Reset categories to defaults."""
+    if not is_admin:
+        await callback.answer(bot_config.NOT_AUTHORIZED, show_alert=True)
+        return
+
+    db_manager = get_db_manager()
+    async with db_manager.session() as session:
+        repo = CategoryRepository(session)
+        created = await repo.ensure_defaults()
+
+    await callback.answer(f"✅ Создано категорий: {created}")
+    await admin_categories(callback, is_admin=True)
+
+
+@router.callback_query(F.data.startswith("admin:msg:") & F.data.endswith(":spintax"))
+async def admin_msg_spintax_preview(callback: CallbackQuery, is_admin: bool = False):
+    """Show spintax preview for admin message."""
+    if not is_admin:
+        await callback.answer(bot_config.NOT_AUTHORIZED, show_alert=True)
+        return
+
+    msg_id = UUID(callback.data.split(":")[2])
+
+    db_manager = get_db_manager()
+    async with db_manager.readonly_session() as session:
+        repo = AdminMessageRepository(session)
+        msg = await repo.get_by_id(msg_id)
+
+    if not msg or not msg.message_text:
+        await callback.answer("Шаблон не найден", show_alert=True)
+        return
+
+    if not has_spintax(msg.message_text):
+        await callback.answer("В тексте нет спинтакса", show_alert=True)
+        return
+
+    # Generate previews
+    variations = spin_preview(msg.message_text, count=5)
+    total = spin_count(msg.message_text)
+
+    lines = [
+        f"🔄 <b>Превью спинтакса</b>",
+        f"📊 Возможных вариаций: {total}\n",
+    ]
+
+    for i, var in enumerate(variations, 1):
+        preview = var[:200] + "..." if len(var) > 200 else var
+        lines.append(f"<b>{i}.</b> {preview}\n")
+
+    text = "\n".join(lines)
+
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="🔄 Ещё варианты", callback_data=f"admin:msg:{msg_id}:spintax")
+    )
+    builder.row(
+        InlineKeyboardButton(text="◀️ Назад", callback_data=f"admin:msg:{msg_id}:view")
+    )
+
+    await callback.message.edit_text(text, reply_markup=builder.as_markup())
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin:msg:") & F.data.endswith(":target"))
+async def admin_msg_set_target(callback: CallbackQuery, is_admin: bool = False):
+    """Set target categories for admin message."""
+    if not is_admin:
+        await callback.answer(bot_config.NOT_AUTHORIZED, show_alert=True)
+        return
+
+    msg_id = UUID(callback.data.split(":")[2])
+
+    db_manager = get_db_manager()
+    async with db_manager.readonly_session() as session:
+        msg_repo = AdminMessageRepository(session)
+        msg = await msg_repo.get_by_id(msg_id)
+
+        cat_repo = CategoryRepository(session)
+        categories = await cat_repo.get_active()
+
+    if not msg:
+        await callback.answer("Шаблон не найден", show_alert=True)
+        return
+
+    current_targets = msg.target_categories or []
+
+    text = f"""
+🎯 <b>Таргетинг для «{msg.name}»</b>
+
+Выберите категории для этого шаблона.
+Пустой выбор = отправлять всем.
+
+Текущий таргет: {', '.join(current_targets) if current_targets else 'Все категории'}
+"""
+
+    builder = InlineKeyboardBuilder()
+
+    for cat in categories:
+        is_selected = cat.slug in current_targets
+        prefix = "✅ " if is_selected else ""
+        builder.row(
+            InlineKeyboardButton(
+                text=f"{prefix}{cat.icon} {cat.name}",
+                callback_data=f"admin:msg:{msg_id}:toggle_cat:{cat.slug}",
+            )
+        )
+
+    builder.row(
+        InlineKeyboardButton(text="🔄 Сбросить (все)", callback_data=f"admin:msg:{msg_id}:clear_cats")
+    )
+    builder.row(
+        InlineKeyboardButton(text="◀️ Назад", callback_data=f"admin:msg:{msg_id}:view")
+    )
+
+    await callback.message.edit_text(text, reply_markup=builder.as_markup())
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin:msg:") & F.data.contains(":toggle_cat:"))
+async def admin_msg_toggle_category(callback: CallbackQuery, is_admin: bool = False):
+    """Toggle category for admin message."""
+    if not is_admin:
+        await callback.answer(bot_config.NOT_AUTHORIZED, show_alert=True)
+        return
+
+    parts = callback.data.split(":")
+    msg_id = UUID(parts[2])
+    cat_slug = parts[4]
+
+    db_manager = get_db_manager()
+    async with db_manager.session() as session:
+        repo = AdminMessageRepository(session)
+        msg = await repo.get_by_id(msg_id)
+
+        if msg:
+            current = list(msg.target_categories or [])
+            if cat_slug in current:
+                current.remove(cat_slug)
+            else:
+                current.append(cat_slug)
+
+            msg.target_categories = current if current else None
+            await session.flush()
+
+    await callback.answer("✅ Обновлено")
+
+    # Refresh view
+    callback.data = f"admin:msg:{msg_id}:target"
+    await admin_msg_set_target(callback, is_admin=True)
+
+
+@router.callback_query(F.data.startswith("admin:msg:") & F.data.endswith(":clear_cats"))
+async def admin_msg_clear_categories(callback: CallbackQuery, is_admin: bool = False):
+    """Clear all categories (target all)."""
+    if not is_admin:
+        await callback.answer(bot_config.NOT_AUTHORIZED, show_alert=True)
+        return
+
+    msg_id = UUID(callback.data.split(":")[2])
+
+    db_manager = get_db_manager()
+    async with db_manager.session() as session:
+        repo = AdminMessageRepository(session)
+        msg = await repo.get_by_id(msg_id)
+        if msg:
+            msg.target_categories = None
+            await session.flush()
+
+    await callback.answer("✅ Таргет сброшен на все категории")
+
+    callback.data = f"admin:msg:{msg_id}:target"
+    await admin_msg_set_target(callback, is_admin=True)
