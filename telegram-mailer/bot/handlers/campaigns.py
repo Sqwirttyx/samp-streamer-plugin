@@ -74,15 +74,15 @@ async def process_campaign_name(message: Message, state: FSMContext, db_user=Non
     name = message.text.strip()[:255]
     await state.update_data(name=name)
 
-    # Get user's accounts
+    # Get user's accounts (all accounts, not just active)
     db_manager = get_db_manager()
     async with db_manager.readonly_session() as session:
         repo = AccountRepository(session)
-        accounts = await repo.get_active_by_user(db_user.id)
+        accounts = await repo.get_by_user(db_user.id)
 
     if not accounts:
         await message.answer(
-            "❌ У вас нет активных аккаунтов.\n\nСначала добавьте аккаунт в разделе 'Мои аккаунты'.",
+            "❌ У вас нет аккаунтов.\n\nСначала добавьте аккаунт в разделе 'Мои аккаунты'.",
             reply_markup=get_cancel_kb("menu:campaigns"),
         )
         await state.clear()

@@ -238,10 +238,11 @@ async def folder_bind(callback: CallbackQuery, db_user=None):
     db_manager = get_db_manager()
     async with db_manager.readonly_session() as session:
         account_repo = AccountRepository(session)
-        accounts = await account_repo.get_active_by_user(db_user.id)
+        # Get all user accounts, not just active ones
+        accounts = await account_repo.get_by_user(db_user.id)
 
     if not accounts:
-        await callback.answer("Нет доступных аккаунтов", show_alert=True)
+        await callback.answer("Нет доступных аккаунтов. Сначала добавьте аккаунт.", show_alert=True)
         return
 
     from aiogram.types import InlineKeyboardButton
@@ -249,7 +250,18 @@ async def folder_bind(callback: CallbackQuery, db_user=None):
 
     builder = InlineKeyboardBuilder()
     for account in accounts:
-        text = f"📱 ***{account.phone_hash[:4]} | {account.health_score}%"
+        # Get status emoji
+        status_val = account.status.value if hasattr(account.status, 'value') else str(account.status)
+        status_emoji = {
+            "warming_up": "🔥",
+            "active": "✅",
+            "paused": "⏸️",
+            "quarantine": "🔒",
+            "banned": "🚫",
+            "error": "❌",
+        }.get(status_val, "❓")
+
+        text = f"📱 {status_emoji} ***{account.phone_hash[:4]} | {account.health_score}%"
         builder.row(
             InlineKeyboardButton(
                 text=text,
