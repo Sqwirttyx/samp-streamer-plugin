@@ -14,3 +14,11 @@ class CampaignCreateState(StatesGroup):
     setting_work_hours = State()
     setting_rest = State()
     confirmation = State()
+
+
+class CampaignEditState(StatesGroup):
+    """States for campaign editing flow."""
+
+    editing_name = State()
+    editing_message = State()
+    editing_intervals = State()

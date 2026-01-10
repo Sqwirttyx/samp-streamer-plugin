@@ -16,7 +16,7 @@ from bot.keyboards.campaigns_kb import (
     get_work_rest_settings_kb,
 )
 from bot.keyboards.inline import get_cancel_kb, get_confirm_kb
-from bot.states import CampaignCreateState
+from bot.states import CampaignCreateState, CampaignEditState
 from common.constants import CampaignStatus
 from database import get_db_manager
 from database.repositories import AccountRepository, CampaignRepository, FolderRepository
@@ -484,6 +484,93 @@ async def campaign_delete(callback: CallbackQuery, db_user=None):
     await menu_campaigns(callback, db_user, is_registered=True)
 
 
+@router.callback_query(F.data.startswith("campaigns:page:"))
+async def campaigns_page(callback: CallbackQuery, db_user=None):
+    """Handle campaigns pagination."""
+    page_str = callback.data.split(":")[-1]
+    if page_str == "current":
+        await callback.answer()
+        return
+
+    page = int(page_str)
+
+    db_manager = get_db_manager()
+    async with db_manager.readonly_session() as session:
+        repo = CampaignRepository(session)
+        campaigns = await repo.get_by_user(db_user.id)
+
+    active_count = sum(1 for c in campaigns if c.status == CampaignStatus.ACTIVE)
+
+    text = f"""
+📨 <b>Мои рассылки</b>
+
+Всего: {len(campaigns)}
+Активных: {active_count}
+"""
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_campaigns_list_kb(campaigns, page=page),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("campaign:") & F.data.endswith(":edit"))
+async def campaign_edit(callback: CallbackQuery, db_user=None):
+    """Edit campaign - show edit options."""
+    campaign_id = UUID(callback.data.split(":")[1])
+
+    db_manager = get_db_manager()
+    async with db_manager.readonly_session() as session:
+        repo = CampaignRepository(session)
+        campaign = await repo.get_by_id(campaign_id)
+
+    if not campaign or campaign.user_id != db_user.id:
+        await callback.answer("Рассылка не найдена", show_alert=True)
+        return
+
+    # Cannot edit active campaigns
+    if campaign.status == CampaignStatus.ACTIVE:
+        await callback.answer("❌ Нельзя редактировать активную рассылку", show_alert=True)
+        return
+
+    from aiogram.types import InlineKeyboardButton
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(
+            text="📝 Изменить название",
+            callback_data=f"campaign:{campaign_id}:edit_name",
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text="💬 Изменить сообщение",
+            callback_data=f"campaign:{campaign_id}:edit_message",
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text="⏱ Изменить интервалы",
+            callback_data=f"campaign:{campaign_id}:edit_intervals",
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(text="◀️ Назад", callback_data=f"campaign:{campaign_id}:view")
+    )
+
+    text = f"""
+✏️ <b>Редактирование рассылки</b>
+
+📨 {campaign.name}
+
+Выберите, что хотите изменить:
+"""
+    await callback.message.edit_text(text, reply_markup=builder.as_markup())
+    await callback.answer()
+
+
 @router.callback_query(F.data.startswith("campaign:") & F.data.endswith(":stats"))
 async def campaign_stats(callback: CallbackQuery, db_user=None):
     """View campaign statistics."""
@@ -514,4 +601,233 @@ async def campaign_stats(callback: CallbackQuery, db_user=None):
     )
 
     await callback.message.edit_text(text, reply_markup=builder.as_markup())
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("campaign:") & F.data.endswith(":edit_name"))
+async def campaign_edit_name_start(callback: CallbackQuery, state: FSMContext, db_user=None):
+    """Start campaign name editing."""
+    campaign_id = UUID(callback.data.split(":")[1])
+
+    db_manager = get_db_manager()
+    async with db_manager.readonly_session() as session:
+        repo = CampaignRepository(session)
+        campaign = await repo.get_by_id(campaign_id)
+
+    if not campaign or campaign.user_id != db_user.id:
+        await callback.answer("Рассылка не найдена", show_alert=True)
+        return
+
+    await state.update_data(edit_campaign_id=str(campaign_id))
+
+    text = f"""
+📝 <b>Изменение названия</b>
+
+Текущее название: {campaign.name}
+
+Введите новое название:
+"""
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_cancel_kb(f"campaign:{campaign_id}:edit"),
+    )
+    await state.set_state(CampaignEditState.editing_name)
+    await callback.answer()
+
+
+@router.message(CampaignEditState.editing_name)
+async def campaign_edit_name_process(message: Message, state: FSMContext, db_user=None):
+    """Process new campaign name."""
+    data = await state.get_data()
+    campaign_id = UUID(data.get("edit_campaign_id"))
+    new_name = message.text.strip()[:255]
+
+    db_manager = get_db_manager()
+    async with db_manager.session() as session:
+        repo = CampaignRepository(session)
+        campaign = await repo.get_by_id(campaign_id)
+        if campaign and campaign.user_id == db_user.id:
+            campaign.name = new_name
+            await session.flush()
+
+    await state.clear()
+    await message.answer(
+        f"✅ Название изменено на: {new_name}",
+        reply_markup=get_campaign_actions_kb(campaign_id, campaign.status),
+    )
+
+
+@router.callback_query(F.data.startswith("campaign:") & F.data.endswith(":edit_message"))
+async def campaign_edit_message_start(callback: CallbackQuery, state: FSMContext, db_user=None):
+    """Start campaign message editing."""
+    campaign_id = UUID(callback.data.split(":")[1])
+
+    db_manager = get_db_manager()
+    async with db_manager.readonly_session() as session:
+        repo = CampaignRepository(session)
+        campaign = await repo.get_by_id(campaign_id)
+
+    if not campaign or campaign.user_id != db_user.id:
+        await callback.answer("Рассылка не найдена", show_alert=True)
+        return
+
+    await state.update_data(edit_campaign_id=str(campaign_id))
+
+    current_text = campaign.message_text or "(без текста)"
+    text = f"""
+💬 <b>Изменение сообщения</b>
+
+Текущее сообщение:
+<code>{current_text[:500]}</code>
+
+Отправьте новое сообщение (текст, фото или видео):
+"""
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_cancel_kb(f"campaign:{campaign_id}:edit"),
+    )
+    await state.set_state(CampaignEditState.editing_message)
+    await callback.answer()
+
+
+@router.message(CampaignEditState.editing_message)
+async def campaign_edit_message_process(message: Message, state: FSMContext, db_user=None):
+    """Process new campaign message."""
+    data = await state.get_data()
+    campaign_id = UUID(data.get("edit_campaign_id"))
+
+    message_text = message.text or message.caption
+    message_media = None
+
+    # Handle media
+    if message.photo:
+        message_media = {
+            "type": "photo",
+            "file_id": message.photo[-1].file_id,
+        }
+    elif message.video:
+        message_media = {
+            "type": "video",
+            "file_id": message.video.file_id,
+        }
+    elif message.document:
+        message_media = {
+            "type": "document",
+            "file_id": message.document.file_id,
+        }
+
+    db_manager = get_db_manager()
+    async with db_manager.session() as session:
+        repo = CampaignRepository(session)
+        campaign = await repo.get_by_id(campaign_id)
+        if campaign and campaign.user_id == db_user.id:
+            campaign.message_text = message_text
+            campaign.message_media = message_media
+            await session.flush()
+
+    await state.clear()
+    await message.answer(
+        "✅ Сообщение успешно обновлено!",
+        reply_markup=get_campaign_actions_kb(campaign_id, campaign.status),
+    )
+
+
+@router.callback_query(F.data.startswith("campaign:") & F.data.endswith(":edit_intervals"))
+async def campaign_edit_intervals_start(callback: CallbackQuery, state: FSMContext, db_user=None):
+    """Start campaign intervals editing."""
+    campaign_id = UUID(callback.data.split(":")[1])
+
+    db_manager = get_db_manager()
+    async with db_manager.readonly_session() as session:
+        repo = CampaignRepository(session)
+        campaign = await repo.get_by_id(campaign_id)
+
+    if not campaign or campaign.user_id != db_user.id:
+        await callback.answer("Рассылка не найдена", show_alert=True)
+        return
+
+    await state.update_data(
+        edit_campaign_id=str(campaign_id),
+        interval_min=campaign.interval_min,
+        interval_max=campaign.interval_max,
+    )
+
+    text = """
+⏱ <b>Изменение интервалов</b>
+
+Настройте интервал между сообщениями:
+"""
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_interval_settings_kb(campaign.interval_min, campaign.interval_max),
+    )
+    await state.set_state(CampaignEditState.editing_intervals)
+    await callback.answer()
+
+
+@router.callback_query(
+    CampaignEditState.editing_intervals,
+    F.data.startswith("interval:"),
+)
+async def campaign_edit_intervals_process(callback: CallbackQuery, state: FSMContext, db_user=None):
+    """Process interval adjustment during editing."""
+    parts = callback.data.split(":")
+    action = parts[1]
+    direction = parts[2] if len(parts) > 2 else None
+
+    data = await state.get_data()
+    campaign_id = UUID(data.get("edit_campaign_id"))
+    interval_min = data.get("interval_min", 25)
+    interval_max = data.get("interval_max", 45)
+
+    step = 5
+
+    if action == "min":
+        if direction == "increase":
+            interval_min = min(interval_min + step, interval_max - step)
+        elif direction == "decrease":
+            interval_min = max(5, interval_min - step)
+    elif action == "max":
+        if direction == "increase":
+            interval_max = min(300, interval_max + step)
+        elif direction == "decrease":
+            interval_max = max(interval_min + step, interval_max - step)
+    elif action == "confirm":
+        # Save to database
+        db_manager = get_db_manager()
+        async with db_manager.session() as session:
+            repo = CampaignRepository(session)
+            campaign = await repo.get_by_id(campaign_id)
+            if campaign and campaign.user_id == db_user.id:
+                campaign.interval_min = interval_min
+                campaign.interval_max = interval_max
+                await session.flush()
+
+        await state.clear()
+        await callback.message.edit_text(
+            f"✅ Интервалы обновлены: {interval_min}-{interval_max} сек",
+            reply_markup=get_campaign_actions_kb(campaign_id, campaign.status),
+        )
+        await callback.answer()
+        return
+    elif action == "cancel":
+        await state.clear()
+        await callback.message.edit_text(
+            "❌ Редактирование отменено",
+            reply_markup=get_campaign_actions_kb(campaign_id, CampaignStatus.DRAFT),
+        )
+        await callback.answer()
+        return
+
+    await state.update_data(interval_min=interval_min, interval_max=interval_max)
+
+    text = """
+⏱ <b>Изменение интервалов</b>
+
+Настройте интервал между сообщениями:
+"""
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_interval_settings_kb(interval_min, interval_max),
+    )
     await callback.answer()
