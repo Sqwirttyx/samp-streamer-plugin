@@ -233,50 +233,58 @@ async def folder_view(callback: CallbackQuery, db_user=None):
 @router.callback_query(F.data.startswith("folder:") & F.data.endswith(":bind"))
 async def folder_bind(callback: CallbackQuery, db_user=None):
     """Show account selection for folder binding."""
-    folder_id = UUID(callback.data.split(":")[1])
-
-    db_manager = get_db_manager()
-    async with db_manager.readonly_session() as session:
-        account_repo = AccountRepository(session)
-        # Get all user accounts, not just active ones
-        accounts = await account_repo.get_by_user(db_user.id)
-
-    if not accounts:
-        await callback.answer("Нет доступных аккаунтов. Сначала добавьте аккаунт.", show_alert=True)
+    if not db_user:
+        await callback.answer("Не авторизован", show_alert=True)
         return
 
-    from aiogram.types import InlineKeyboardButton
-    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    try:
+        folder_id = UUID(callback.data.split(":")[1])
 
-    builder = InlineKeyboardBuilder()
-    for account in accounts:
-        # Get status emoji
-        status_val = account.status.value if hasattr(account.status, 'value') else str(account.status)
-        status_emoji = {
-            "warming_up": "🔥",
-            "active": "✅",
-            "paused": "⏸️",
-            "quarantine": "🔒",
-            "banned": "🚫",
-            "error": "❌",
-        }.get(status_val, "❓")
+        db_manager = get_db_manager()
+        async with db_manager.readonly_session() as session:
+            account_repo = AccountRepository(session)
+            # Get all user accounts, not just active ones
+            accounts = await account_repo.get_by_user(db_user.id)
 
-        text = f"📱 {status_emoji} ***{account.phone_hash[:4]} | {account.health_score}%"
-        builder.row(
-            InlineKeyboardButton(
-                text=text,
-                callback_data=f"folder:{folder_id}:bind_to:{account.id}",
+        if not accounts:
+            await callback.answer("Нет доступных аккаунтов. Сначала добавьте аккаунт.", show_alert=True)
+            return
+
+        from aiogram.types import InlineKeyboardButton
+        from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+        builder = InlineKeyboardBuilder()
+        for account in accounts:
+            # Get status emoji
+            status_val = account.status.value if hasattr(account.status, 'value') else str(account.status)
+            status_emoji = {
+                "warming_up": "🔥",
+                "active": "✅",
+                "paused": "⏸️",
+                "quarantine": "🔒",
+                "banned": "🚫",
+                "error": "❌",
+            }.get(status_val, "❓")
+
+            text = f"📱 {status_emoji} ***{account.phone_hash[:4]} | {account.health_score}%"
+            builder.row(
+                InlineKeyboardButton(
+                    text=text,
+                    callback_data=f"folder:{folder_id}:bind_to:{account.id}",
+                )
             )
+        builder.row(
+            InlineKeyboardButton(text="❌ Отмена", callback_data=f"folder:{folder_id}:view")
         )
-    builder.row(
-        InlineKeyboardButton(text="❌ Отмена", callback_data=f"folder:{folder_id}:view")
-    )
 
-    await callback.message.edit_text(
-        "🔗 <b>Выберите аккаунт для привязки:</b>",
-        reply_markup=builder.as_markup(),
-    )
-    await callback.answer()
+        await callback.message.edit_text(
+            "🔗 <b>Выберите аккаунт для привязки:</b>",
+            reply_markup=builder.as_markup(),
+        )
+        await callback.answer()
+
+    except Exception as e:
+        await callback.answer(f"Ошибка: {str(e)[:100]}", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("folder:") & F.data.contains(":bind_to:"))
