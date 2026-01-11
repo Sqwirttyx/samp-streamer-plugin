@@ -127,8 +127,48 @@ class FolderParser:
                 )
             )
 
-            # Get filter ID from result
-            filter_id = result.filter_id
+            # Extract filter_id from Updates result
+            # JoinChatlistInviteRequest returns Updates object
+            filter_id = None
+
+            # Try to get filter_id from updates
+            if hasattr(result, 'filter_id'):
+                filter_id = result.filter_id
+            elif hasattr(result, 'updates'):
+                # Look for filter info in updates
+                for update in result.updates:
+                    if hasattr(update, 'filter_id'):
+                        filter_id = update.filter_id
+                        break
+                    if hasattr(update, 'filter') and hasattr(update.filter, 'id'):
+                        filter_id = update.filter.id
+                        break
+
+            # If still no filter_id, try to find it from dialog filters
+            if filter_id is None:
+                try:
+                    from telethon.tl.functions.messages import GetDialogFiltersRequest
+                    filters_result = await self.client(GetDialogFiltersRequest())
+
+                    # Find the filter that matches our folder (by title)
+                    folder_title = check_result.get("title", "")
+                    for f in getattr(filters_result, 'filters', []):
+                        if hasattr(f, 'title') and f.title == folder_title:
+                            filter_id = f.id
+                            break
+
+                    # If not found by title, use the last filter (most recently added)
+                    if filter_id is None and hasattr(filters_result, 'filters') and filters_result.filters:
+                        last_filter = filters_result.filters[-1]
+                        if hasattr(last_filter, 'id'):
+                            filter_id = last_filter.id
+                except Exception as e:
+                    logger.warning(f"Could not get filter_id from dialog filters: {e}")
+
+            # Default to 0 if we still can't get it (chat_ids are the main value)
+            if filter_id is None:
+                filter_id = 0
+                logger.warning(f"Could not extract filter_id, using 0")
 
             # Extract chat IDs
             chat_ids = [self._get_chat_id(chat) for chat in check_result["chats"]]
