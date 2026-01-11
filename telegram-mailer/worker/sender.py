@@ -3,7 +3,7 @@
 import asyncio
 import random
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Dict, Optional, Set
 from uuid import UUID
 
 from telethon import TelegramClient
@@ -14,6 +14,8 @@ from telethon.errors import (
     PeerFloodError,
     UserBannedInChannelError,
 )
+from telethon.tl.functions.messages import SetTypingRequest
+from telethon.tl.types import SendMessageTypingAction
 
 from common.constants import (
     AccountStatus,
@@ -25,10 +27,17 @@ from common.constants import (
 from common.exceptions import AccountBannedError, FloodWaitError, SpamBlockError
 from common.logger import get_logger
 from common.spintax import spin, has_spintax
+from core.antispam.health_checker import HealthChecker
+from core.antispam.interval_calculator import IntervalCalculator
 from worker.message_handler import MessageHandler
 from worker.session_manager import SessionManager
+from worker.text_variation import variate_text
 
 logger = get_logger(__name__)
+
+# Per-chat cooldown storage (chat_id -> last_sent_time)
+_chat_cooldowns: Dict[int, datetime] = {}
+CHAT_COOLDOWN_HOURS = 24  # Don't send to same chat within 24h
 
 
 class SendResult:
@@ -133,6 +142,17 @@ class Sender:
         self._running = False
         self._paused = False
 
+        # Advanced anti-spam components
+        self.health_checker = HealthChecker()
+        self.interval_calculator = IntervalCalculator(
+            base_min=interval_min,
+            base_max=interval_max,
+        )
+
+        # Behavioral mimicry settings
+        self.enable_typing_simulation = True
+        self.typing_speed_cps = 12  # Characters per second (human ~10-15)
+
     async def start(self) -> bool:
         """
         Start sender - load session and connect.
@@ -183,19 +203,83 @@ class Sender:
     def is_running(self) -> bool:
         return self._running and not self._paused
 
+    def can_send_to_chat(self, chat_id: int) -> bool:
+        """
+        Check if we can send to chat (cooldown check).
+
+        Args:
+            chat_id: Target chat ID
+
+        Returns:
+            True if cooldown expired or no previous send
+        """
+        global _chat_cooldowns
+
+        if chat_id not in _chat_cooldowns:
+            return True
+
+        last_sent = _chat_cooldowns[chat_id]
+        cooldown_delta = timedelta(hours=CHAT_COOLDOWN_HOURS)
+
+        if datetime.utcnow() - last_sent >= cooldown_delta:
+            return True
+
+        return False
+
+    def mark_chat_sent(self, chat_id: int) -> None:
+        """Mark chat as sent to (update cooldown)."""
+        global _chat_cooldowns
+        _chat_cooldowns[chat_id] = datetime.utcnow()
+
+    async def simulate_typing(self, chat_id: int, text_length: int) -> None:
+        """
+        Simulate human typing behavior.
+
+        Args:
+            chat_id: Target chat ID
+            text_length: Length of message text
+        """
+        if not self.enable_typing_simulation or not self.client:
+            return
+
+        try:
+            # Calculate typing duration based on text length
+            # Human types ~10-15 chars/sec, add randomness
+            base_duration = text_length / self.typing_speed_cps
+            jitter = random.uniform(0.7, 1.3)
+            typing_duration = min(base_duration * jitter, 5.0)  # Max 5 seconds
+
+            if typing_duration < 0.5:
+                return  # Too short to bother
+
+            # Send typing action
+            await self.client(SetTypingRequest(
+                peer=chat_id,
+                action=SendMessageTypingAction()
+            ))
+
+            # Wait while "typing"
+            await asyncio.sleep(typing_duration)
+
+        except Exception as e:
+            # Non-critical - log and continue
+            logger.debug(f"Typing simulation failed: {e}")
+
     async def send_to_chat(
         self,
         chat_id: int,
         text: Optional[str] = None,
         media: Optional[dict] = None,
+        simulate_typing: bool = True,
     ) -> SendResult:
         """
-        Send message to single chat.
+        Send message to single chat with human-like behavior.
 
         Args:
             chat_id: Target chat ID
             text: Message text
             media: Media dict
+            simulate_typing: Whether to simulate typing
 
         Returns:
             SendResult
@@ -203,27 +287,47 @@ class Sender:
         if not self.message_handler:
             return SendResult(False, chat_id, "Sender not started")
 
+        # Check if health allows sending
+        if self.health_checker.should_pause():
+            pause_duration = self.health_checker.get_recommended_pause_duration()
+            logger.warning(
+                f"Health check triggered pause: {pause_duration}s, "
+                f"score: {self.health_checker.current_score}"
+            )
+            await asyncio.sleep(pause_duration)
+            self.health_checker.apply_time_recovery()
+
         try:
+            # Simulate typing for human-like behavior
+            if simulate_typing and text:
+                await self.simulate_typing(chat_id, len(text))
+
+            # Send message
             success, error = await self.message_handler.send_with_media_dict(
                 chat_id, text, media
             )
 
             if success:
                 self.stats.record_success()
+                self.health_checker.record_success()
                 self.consecutive_flood_waits = 0
+                self.mark_chat_sent(chat_id)
                 return SendResult(True, chat_id)
             else:
                 self.stats.record_error()
+                self.health_checker.record_error(error or "unknown")
                 return SendResult(False, chat_id, error)
 
         except TelethonFloodWaitError as e:
             self.stats.record_flood_wait()
+            self.health_checker.record_flood_wait(e.seconds)
             self.consecutive_flood_waits += 1
-            return SendResult(False, chat_id, f"FloodWait", flood_wait=e.seconds)
+            return SendResult(False, chat_id, "FloodWait", flood_wait=e.seconds)
 
         except PeerFloodError:
             # Spam block - critical error
             self.stats.record_error()
+            self.health_checker.record_flood_wait(3600)  # Major penalty
             raise SpamBlockError("Account received spam block")
 
         except (UserBannedInChannelError, ChatWriteForbiddenError, ChannelPrivateError) as e:
@@ -233,6 +337,7 @@ class Sender:
 
         except Exception as e:
             self.stats.record_error()
+            self.health_checker.record_error(str(type(e).__name__))
             return SendResult(False, chat_id, str(e))
 
     async def handle_flood_wait(self, seconds: int) -> None:
@@ -278,16 +383,16 @@ class Sender:
 
     def get_next_interval(self) -> int:
         """
-        Calculate next send interval with randomization.
+        Calculate next send interval based on health and randomization.
 
         Returns:
             Interval in seconds
         """
-        base = random.randint(self.interval_min, self.interval_max)
-
-        # Add some jitter (±20%)
-        jitter = random.uniform(0.8, 1.2)
-        return int(base * jitter)
+        # Use smart interval calculator with health awareness
+        return self.interval_calculator.get_safe_interval(
+            health_score=self.health_checker.current_score,
+            flood_wait_count=self.consecutive_flood_waits,
+        )
 
     async def run_campaign(
         self,
@@ -334,16 +439,26 @@ class Sender:
                     if chat_id in skipped_chats:
                         continue
 
+                    # Check per-chat cooldown (24h between sends to same chat)
+                    if not self.can_send_to_chat(chat_id):
+                        logger.debug(f"Chat {chat_id} still in cooldown, skipping")
+                        continue
+
                     # Check if rest needed
                     if self.should_rest():
                         await self.rest()
 
-                    # Apply spintax for unique message variation
+                    # Apply message uniqueness: spintax + text variation
                     current_text = message_text
-                    if message_text and has_spintax(message_text):
-                        current_text = spin(message_text)
+                    if message_text:
+                        # 1. Apply spintax if present
+                        if has_spintax(message_text):
+                            current_text = spin(message_text)
+                        # 2. Apply text variation for uniqueness
+                        # (synonyms, invisible chars, emoji variation)
+                        current_text = variate_text(current_text)
 
-                    # Send message
+                    # Send message with human-like behavior
                     result = await self.send_to_chat(
                         chat_id, current_text, message_media
                     )
@@ -407,16 +522,23 @@ class Sender:
 
     async def health_check(self) -> dict:
         """
-        Perform health check on account.
+        Perform comprehensive health check on account.
 
         Returns:
-            Health check result dict
+            Health check result dict with internal metrics
         """
         result = {
             "connected": False,
             "authorized": False,
             "spam_blocked": False,
             "can_send": False,
+            "health_score": self.health_checker.current_score,
+            "health_level": self.health_checker.get_health_level(),
+            "should_pause": self.health_checker.should_pause(),
+            "flood_wait_count": self.health_checker.flood_wait_count,
+            "consecutive_flood_waits": self.consecutive_flood_waits,
+            "stats": self.stats.to_dict(),
+            "interval_status": self.interval_calculator.get_status(),
         }
 
         if not self.client:
@@ -430,6 +552,7 @@ class Sender:
                 result["connected"]
                 and result["authorized"]
                 and not result["spam_blocked"]
+                and not result["should_pause"]
             )
         except Exception as e:
             logger.error(f"Health check error: {e}")

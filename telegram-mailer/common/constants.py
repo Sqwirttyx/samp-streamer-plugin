@@ -206,13 +206,13 @@ SENDING_MODE_CONFIG = {
         "description": "Balanced mode for regular campaigns",
     },
     SendingMode.AGGRESSIVE: {
-        "min_delay": 3,
-        "max_delay": 10,
-        "messages_per_day": 9000,
-        "burst_size": 20,
-        "burst_pause": 30,
-        "flood_wait_multiplier": 1.1,
-        "description": "Maximum throughput (7000-9000 msg/day)",
+        "min_delay": 8,  # Increased from 3 - safer for Telegram ML
+        "max_delay": 18,  # Increased from 10 - more variation
+        "messages_per_day": 7000,  # Reduced from 9000 - sustainable rate
+        "burst_size": 15,  # Reduced from 20 - less suspicious
+        "burst_pause": 45,  # Increased from 30 - better recovery
+        "flood_wait_multiplier": 1.15,  # Increased from 1.1 - adapt faster
+        "description": "High throughput (5000-7000 msg/day, age 6+ months)",
     },
 }
 
