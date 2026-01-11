@@ -12,6 +12,7 @@ from common.exceptions import (
     AccountSessionInvalidError,
     ProxyConnectionError,
     SessionDecryptionError,
+    SessionNotFoundError,
 )
 from common.logger import get_logger
 from storage.session_storage import get_session_storage
@@ -24,6 +25,7 @@ class SessionManager:
     Manager for Telethon client sessions.
 
     Handles loading, validating, and managing Telegram client connections.
+    Supports both StringSession (string-based) and file-based sessions.
     """
 
     def __init__(self):
@@ -41,6 +43,8 @@ class SessionManager:
     ) -> TelegramClient:
         """
         Load and connect Telethon client from stored session.
+
+        Supports both StringSession (string) and file-based sessions.
 
         Args:
             user_id: User UUID
@@ -63,24 +67,44 @@ class SessionManager:
             if client.is_connected():
                 return client
 
-        # Get decrypted session path
-        try:
-            session_path = await self.storage.get_session(user_id, account_id)
-        except Exception as e:
-            raise SessionDecryptionError(f"Failed to load session: {e}")
-
         # Build proxy config for Telethon
         proxy_config = None
         if proxy:
             proxy_config = self._build_proxy_config(proxy)
 
-        # Create client
-        client = TelegramClient(
-            str(session_path),
-            self.api_id,
-            self.api_hash,
-            proxy=proxy_config,
-        )
+        # Try to load session - first try StringSession, then file-based
+        client = None
+
+        # Method 1: Try StringSession (stored as encrypted string)
+        try:
+            session_string = await self.storage.get_session_string(user_id, account_id)
+            logger.debug(f"Loading StringSession for account {account_id}")
+            client = TelegramClient(
+                StringSession(session_string),
+                self.api_id,
+                self.api_hash,
+                proxy=proxy_config,
+            )
+        except SessionNotFoundError:
+            logger.debug(f"No StringSession found for {account_id}, trying file-based")
+        except Exception as e:
+            logger.debug(f"StringSession load failed: {e}, trying file-based")
+
+        # Method 2: Try file-based session (SQLite)
+        if client is None:
+            try:
+                session_path = await self.storage.get_session(user_id, account_id)
+                logger.debug(f"Loading file session from {session_path}")
+                client = TelegramClient(
+                    str(session_path),
+                    self.api_id,
+                    self.api_hash,
+                    proxy=proxy_config,
+                )
+            except SessionNotFoundError:
+                raise SessionDecryptionError(f"No session found for account {account_id}")
+            except Exception as e:
+                raise SessionDecryptionError(f"Failed to load session: {e}")
 
         # Connect
         try:
