@@ -3,6 +3,7 @@
 from uuid import UUID
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
@@ -15,6 +16,50 @@ from database import get_db_manager
 from database.repositories import AccountRepository, FolderRepository
 
 router = Router(name="folders")
+
+
+def short_uuid(uuid_val: UUID) -> str:
+    """Shorten UUID for callback_data (Telegram 64 byte limit)."""
+    return uuid_val.hex[:12]
+
+
+async def find_account_by_short_id(user_id: UUID, short_id: str):
+    """Find account by shortened UUID."""
+    db_manager = get_db_manager()
+    async with db_manager.readonly_session() as session:
+        repo = AccountRepository(session)
+        accounts = await repo.get_by_user(user_id)
+        for acc in accounts:
+            if acc.id.hex[:12] == short_id:
+                return acc
+    return None
+
+
+async def find_folder_by_short_id(user_id: UUID, short_id: str):
+    """Find folder by shortened UUID."""
+    db_manager = get_db_manager()
+    async with db_manager.readonly_session() as session:
+        repo = FolderRepository(session)
+        folders = await repo.get_by_user(user_id)
+        for folder in folders:
+            if folder.id.hex[:12] == short_id:
+                return folder
+    return None
+
+
+async def safe_edit_text(message, text: str, reply_markup=None):
+    """
+    Safely edit message, ignoring 'message is not modified' error.
+
+    This error occurs when the new content is identical to the current content.
+    """
+    try:
+        await message.edit_text(text, reply_markup=reply_markup)
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            pass  # Ignore - message already has the same content
+        else:
+            raise
 
 
 def get_folders_list_kb(folders, page=0, per_page=10):
@@ -239,6 +284,7 @@ async def folder_bind(callback: CallbackQuery, db_user=None):
 
     try:
         folder_id = UUID(callback.data.split(":")[1])
+        folder_short = short_uuid(folder_id)
 
         db_manager = get_db_manager()
         async with db_manager.readonly_session() as session:
@@ -267,10 +313,12 @@ async def folder_bind(callback: CallbackQuery, db_user=None):
             }.get(status_val, "❓")
 
             text = f"📱 {status_emoji} ***{account.phone_hash[:4]} | {account.health_score}%"
+            acc_short = short_uuid(account.id)
+            # Use short IDs to fit within Telegram's 64 byte callback_data limit
             builder.row(
                 InlineKeyboardButton(
                     text=text,
-                    callback_data=f"folder:{folder_id}:bind_to:{account.id}",
+                    callback_data=f"f:bind:{folder_short}:{acc_short}",
                 )
             )
         builder.row(
@@ -287,20 +335,44 @@ async def folder_bind(callback: CallbackQuery, db_user=None):
         await callback.answer(f"Ошибка: {str(e)[:100]}", show_alert=True)
 
 
-@router.callback_query(F.data.startswith("folder:") & F.data.contains(":bind_to:"))
+@router.callback_query(F.data.startswith("f:bind:"))
 async def folder_bind_to(callback: CallbackQuery, db_user=None):
-    """Bind folder to selected account."""
-    parts = callback.data.split(":")
-    folder_id = UUID(parts[1])
-    account_id = UUID(parts[3])
+    """Bind folder to selected account using short IDs."""
+    if not db_user:
+        await callback.answer("Не авторизован", show_alert=True)
+        return
 
-    db_manager = get_db_manager()
-    async with db_manager.session() as session:
-        repo = FolderRepository(session)
-        await repo.bind_to_account(folder_id, account_id)
+    try:
+        # Format: f:bind:{folder_short}:{account_short}
+        parts = callback.data.split(":")
+        folder_short = parts[2]
+        account_short = parts[3]
 
-    await callback.answer("✅ Папка привязана к аккаунту")
-    await folder_view(callback, db_user)
+        # Find actual objects by short ID
+        folder = await find_folder_by_short_id(db_user.id, folder_short)
+        account = await find_account_by_short_id(db_user.id, account_short)
+
+        if not folder:
+            await callback.answer("Папка не найдена", show_alert=True)
+            return
+
+        if not account:
+            await callback.answer("Аккаунт не найден", show_alert=True)
+            return
+
+        db_manager = get_db_manager()
+        async with db_manager.session() as session:
+            repo = FolderRepository(session)
+            await repo.bind_to_account(folder.id, account.id)
+
+        await callback.answer("✅ Папка привязана к аккаунту")
+
+        # Update callback data to show folder view
+        callback.data = f"folder:{folder.id}:view"
+        await folder_view(callback, db_user)
+
+    except Exception as e:
+        await callback.answer(f"Ошибка: {str(e)[:100]}", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("folder:") & F.data.endswith(":unbind"))
@@ -369,7 +441,8 @@ async def folder_sync(callback: CallbackQuery, db_user=None):
         chat_count, message = await service.sync_folder(folder_id, db_user.id, account_id)
 
         if chat_count > 0:
-            await callback.message.edit_text(
+            await safe_edit_text(
+                callback.message,
                 f"✅ Синхронизация завершена!\n\nНайдено чатов: {chat_count}",
                 reply_markup=get_folder_actions_kb(folder_id, True),
             )
@@ -379,8 +452,22 @@ async def folder_sync(callback: CallbackQuery, db_user=None):
                 folder_repo = FolderRepository(session)
                 await folder_repo.set_error(folder_id)
 
-            await callback.message.edit_text(
+            await safe_edit_text(
+                callback.message,
                 f"❌ {message}",
+                reply_markup=get_folder_actions_kb(folder_id, True),
+            )
+
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e):
+            # Real error, not just "not modified"
+            async with db_manager.session() as session:
+                folder_repo = FolderRepository(session)
+                await folder_repo.set_error(folder_id)
+
+            await safe_edit_text(
+                callback.message,
+                f"❌ Ошибка синхронизации: {str(e)[:200]}",
                 reply_markup=get_folder_actions_kb(folder_id, True),
             )
 
@@ -390,7 +477,8 @@ async def folder_sync(callback: CallbackQuery, db_user=None):
             folder_repo = FolderRepository(session)
             await folder_repo.set_error(folder_id)
 
-        await callback.message.edit_text(
+        await safe_edit_text(
+            callback.message,
             f"❌ Ошибка синхронизации: {str(e)[:200]}",
             reply_markup=get_folder_actions_kb(folder_id, True),
         )
